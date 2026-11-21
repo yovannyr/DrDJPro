@@ -307,6 +307,7 @@ export component AppWindow inherits Window {
     in-out property <length> table-scroll-x;
     callback change-table-column(int, int);
     pure callback track-transfer(string) -> data-transfer;
+    public function cancel-library-drag() -> bool { return track-library.cancel-deck-drag(); }
     pure callback accepts-track-drop(int, data-transfer) -> bool;
     callback drop-track(int, data-transfer) -> bool;
     in property <int> external-drop-deck: -1;
@@ -765,6 +766,10 @@ export component AppWindow inherits Window {
     callback add-to-crate(); callback remove-from-crate();
     keyboard-scope := FocusScope {
         width: 100%; height: 100%;
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape && root.cancel-library-drag() { return accept; }
+            return reject;
+        }
         focus-lost(reason) => { root.release-active-hot-cue-key(); }
         key-pressed(event) => {
             if root.settings-open {
@@ -867,7 +872,7 @@ export component AppWindow inherits Window {
                 platter-bpm: root.left-platter-bpm; platter-time: root.left-platter-time;
                 platter-angle: root.left-platter-angle; platter-touched: root.left-platter-touched;
                 censor: root.left-censor;
-                external-hover: root.external-drop-deck == 0;
+                external-hover: root.external-drop-deck == 0 || track-library.hovered-deck == 0;
                 accepts-drop(data) => { return root.accepts-track-drop(0,data); }
                 drop-track(data) => { return root.drop-track(0,data); }
                 waveform: root.left-waveform; colors: root.left-waveform-colors;
@@ -918,7 +923,7 @@ export component AppWindow inherits Window {
                 platter-bpm: root.right-platter-bpm; platter-time: root.right-platter-time;
                 platter-angle: root.right-platter-angle; platter-touched: root.right-platter-touched;
                 censor: root.right-censor;
-                external-hover: root.external-drop-deck == 1;
+                external-hover: root.external-drop-deck == 1 || track-library.hovered-deck == 1;
                 accepts-drop(data) => { return root.accepts-track-drop(1,data); }
                 drop-track(data) => { return root.drop-track(1,data); }
                 waveform: root.right-waveform; colors: root.right-waveform-colors;
@@ -1233,6 +1238,12 @@ Rectangle {
                     add-track => { root.add-to-crate(); } remove-track => { root.remove-from-crate(); }
                 }
         track-library := TrackLibrary {
+            capture-deck-drag: Platform.os == OperatingSystemType.windows && root.view-mode == LayoutMode.Classic && !root.settings-open;
+            accepting-deck(px, py, data) => {
+                let deck = root.external-drop-target(px, py);
+                return deck >= 0 && root.accepts-track-drop(deck, data) ? deck : -1;
+            }
+            drop-on-deck(deck, data) => { root.drop-track(deck, data); }
             import-itunes => { root.show-itunes(); }
             columns: root.table-columns; all-columns: root.all-table-columns; table-width: root.table-width;
             table-scroll-x <=> root.table-scroll-x;
