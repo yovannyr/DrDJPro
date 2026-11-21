@@ -4149,6 +4149,7 @@ impl AudioController {
             self.release_censor(id);
         }
         if let Some(ui) = self.ui.upgrade() {
+            ui.invoke_cancel_library_drag();
             ui.set_controller_shift(false);
         }
         *self.seek_holds.borrow_mut() = [None, None];
@@ -16319,6 +16320,130 @@ mod tests {
             }
             ui.hide().unwrap();
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn classic_library_drag_handles_coalesced_motion_and_guards() {
+        use slint::platform::{PointerEventButton, WindowEvent};
+        use PointerEventButton::{Left, Right};
+
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = AppWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1280., 860.));
+        let (mixer, _output) = rodio::mixer::mixer(2, 48000);
+        let engine = Rc::new(DualDeckEngine::from_mixer(mixer, 2, 48000));
+        let c = AudioController::wire(
+            &ui,
+            engine.clone(),
+            Arc::new(|| panic!("drag must not open picker")),
+            Arc::new(|| None),
+        );
+        let track = std::env::var_os("DRDJ_TEST_CLASSIC_DROP_TRACK")
+            .map(PathBuf::from)
+            .unwrap_or_else(fixture);
+        c.library.borrow_mut().insert([track.clone()]);
+        c.publish_library();
+        finish_search(&c);
+        ui.set_view_mode(crate::LayoutMode::Classic);
+        ui.set_mc4000_connected(true);
+        ui.show().unwrap();
+
+        let center = |label| {
+            let element = control(&ui, label);
+            let origin = element.absolute_position();
+            let size = element.size();
+            slint::LogicalPosition::new(origin.x + size.width / 2., origin.y + size.height / 2.)
+        };
+        let source = center("Track 1 name");
+        let a = center("DECK A round virtual platter");
+        let b = center("DECK B round virtual platter");
+        let press = |button| {
+            ui.window().dispatch_event(WindowEvent::PointerPressed {
+                position: source,
+                button,
+            });
+        };
+        let release_at = |position, button| {
+            // A busy Windows event loop can deliver just the final move before release.
+            ui.window()
+                .dispatch_event(WindowEvent::PointerMoved { position });
+            ui.window()
+                .dispatch_event(WindowEvent::PointerReleased { position, button });
+        };
+
+        ui.invoke_select_library(-1);
+        press(Left);
+        release_at(source, Left);
+        assert_eq!(ui.get_selected_track(), 1);
+        assert!(
+            c.pending.borrow().is_none(),
+            "clicking a row must only select it"
+        );
+
+        press(Left);
+        release_at(center("Crossfader"), Left);
+        assert!(c.pending.borrow().is_none(), "release outside both decks");
+        press(Right);
+        release_at(a, Right);
+        assert!(c.pending.borrow().is_none(), "right-button drag");
+
+        for deactivate in [false, true] {
+            press(Left);
+            ui.window()
+                .dispatch_event(WindowEvent::PointerMoved { position: a });
+            if deactivate {
+                c.handle_window_deactivated();
+            } else {
+                ui.window().dispatch_event(WindowEvent::KeyPressed {
+                    text: slint::platform::Key::Escape.into(),
+                });
+            }
+            release_at(a, Left);
+            assert!(c.pending.borrow().is_none(), "cancelled drag");
+        }
+
+        press(Left);
+        control(&ui, "Open settings").invoke_accessible_default_action();
+        release_at(b, Left);
+        assert!(c.pending.borrow().is_none(), "settings opened during drag");
+        control(&ui, "Back to decks").invoke_accessible_default_action();
+
+        for (deck, target) in [(DeckId::A, a), (DeckId::B, b)] {
+            press(Left);
+            release_at(target, Left);
+            assert!(
+                c.pending.borrow().is_some(),
+                "coalesced drag missed {deck:?}"
+            );
+            finish(&c);
+            let loaded = engine.snapshot(deck);
+            assert_eq!(
+                loaded.path.unwrap().canonicalize().unwrap(),
+                track.canonicalize().unwrap()
+            );
+            assert!(!loaded.playing);
+            if deck == DeckId::A {
+                assert!(engine.snapshot(DeckId::B).path.is_none());
+            }
+        }
+
+        let playing_track = wav_file(8192, 48000);
+        engine.load_a(playing_track.path()).unwrap();
+        engine.play(DeckId::A);
+        press(Left);
+        release_at(a, Left);
+        assert!(
+            c.pending.borrow().is_none(),
+            "playing target must not reload"
+        );
+        let playing = engine.snapshot(DeckId::A);
+        assert!(playing.playing);
+        assert_eq!(
+            playing.path.unwrap().canonicalize().unwrap(),
+            playing_track.path().canonicalize().unwrap()
+        );
+        ui.hide().unwrap();
     }
     #[test]
     fn standalone_default_output_plays_both_decks_without_midi() {

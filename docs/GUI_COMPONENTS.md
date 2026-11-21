@@ -1010,11 +1010,13 @@ This is explicit manual audio recovery after a reported stream failure, not auto
 
 ## Drag library tracks into either deck (2026-10-30)
 
-Each available library row is now a copy-only Slint DragArea carrying a file-path DataTransfer; normal click/keyboard selection remains available. Both full deck surfaces are DropAreas with a hover border. Drop acceptance requires one absolute supported audio path, a paused target, restored storage, and no pending track/import/device operation. The target is checked again at drop time. Decode, path canonicalization and metadata extraction use the existing cancellable worker; the picker is not opened, and loaded tracks remain paused. Worker validation errors retain the previous loaded deck through the existing completion path. Multiple files and text payloads are rejected; no source file or library row is moved or deleted.
+Dragging an available library row offers a copy of its file path. The eligible deck shows a hover border. At release the controller checks for one absolute supported audio path, a paused target, restored storage and no pending track, import or device operation. The cancellable worker resolves the path, reads metadata and decodes the track. A successful load leaves the deck paused. A failed load preserves its previous track.
 
 Headless pointer press/move/release tests exercise actual library-to-A/B drops at 850x740 and 1280x860. Callback tests cover invalid deck, text/multiple-file payloads, pending load, playing-target rejection and loading the other paused deck while A plays. These tests do not claim native Windows mouse/visual or listening acceptance.
 
-Slint's DragArea/DropArea mechanism is used for within-window dragging; a click alone retains existing selection behavior. External Windows file drops use the application bridge described below, not an upstream native DropArea implementation.
+In Classic on Windows, the row captures the left-button press and resolves the deck at the release position. This handles a quick drag when Windows delivers just one movement to the target. Escape or a loss of window focus cancels the gesture. Other layouts and platforms use Slint's DragArea and DropArea. Clicking a row selects it. Drops from Windows Explorer use the bridge below.
+
+The Windows regression test `classic_library_drag_handles_coalesced_motion_and_guards` uses the bundled MP3. Set `DRDJ_TEST_CLASSIC_DROP_TRACK` to an absolute audio file path to replay the same pointer sequence with a reported track.
 
 ## External Windows file-manager drops (2026-10-30)
 
