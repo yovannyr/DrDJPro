@@ -138,7 +138,8 @@ fn native(_: &WebBrowserWindow, _: bool, _: SyncSender<Event>) -> Result<Box<dyn
 }
 
 struct Session {
-    backend: Box<dyn Backend>,
+    backend: Option<Box<dyn Backend>>,
+    pending: Option<(Instant, SyncSender<Event>)>,
     view: WebBrowserWindow,
     events: Receiver<Event>,
     closed: Rc<Cell<bool>>,
@@ -148,6 +149,7 @@ struct Session {
 }
 impl Session {
     fn act(&mut self, action: Action) {
+        let Some(backend) = &self.backend else { return };
         let result = match action {
             Action::Navigate | Action::Home => {
                 let target = if matches!(action, Action::Home) {
@@ -162,21 +164,25 @@ impl Session {
                 if !web_policy::allowed(&target) {
                     Err("Use an HTTPS address or bundled help".into())
                 } else {
-                    self.backend.load(&target)
+                    backend.load(&target)
                 }
             }
-            _ => self.backend.command(action),
+            _ => backend.command(action),
         };
         match result {
             Ok(()) => {
                 self.loading = Some(Instant::now());
-                self.view
-                    .set_status("Loading; Beatport deck streaming is not configured".into());
+                self.view.set_status(if self.help {
+                    "Hilfe wird geladen …".into()
+                } else {
+                    "Loading; Beatport deck streaming is not configured".into()
+                });
             }
             Err(e) => self.view.set_status(e.into()),
         }
     }
     fn poll(&mut self) {
+        let Some(backend) = &self.backend else { return };
         for _ in 0..32 {
             let Ok(event) = self.events.try_recv() else {
                 break;
@@ -189,10 +195,14 @@ impl Session {
                 Event::Finished(url) => {
                     self.view.set_address(url.into());
                     self.loading = None;
-                    self.view.set_status("Navigation ended; inspect the page for errors. Website audio is separate from DJ decks.".into());
+                    self.view.set_status(if self.help {
+                        "Navigation abgeschlossen".into()
+                    } else {
+                        "Navigation ended; inspect the page for errors. Website audio is separate from DJ decks.".into()
+                    });
                 }
                 Event::Popup(url) => {
-                    if let Err(e) = self.backend.load(&url) {
+                    if let Err(e) = backend.load(&url) {
                         self.view.set_status(e.into());
                     }
                 }
@@ -216,7 +226,7 @@ impl Session {
         );
         if self.size != key {
             self.size = key;
-            if let Err(e) = self.backend.resize(self.view.window()) {
+            if let Err(e) = backend.resize(self.view.window()) {
                 self.view.set_status(e.into());
             }
         }
@@ -227,29 +237,62 @@ type Factory =
     Rc<dyn Fn(&WebBrowserWindow, bool, SyncSender<Event>) -> Result<Box<dyn Backend>, String>>;
 /// Install explicit WEB/HELP actions; no runtime starts during app initialization.
 pub fn wire(ui: &AppWindow) -> Timer {
-    wire_with(ui, Rc::new(native)).0
+    wire_with(ui, Rc::new(native), Rc::new(parent_ready)).0
 }
-fn wire_with(ui: &AppWindow, factory: Factory) -> (Timer, Sessions) {
+
+fn parent_ready(view: &WebBrowserWindow) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use slint::winit_030::WinitWindowAccessor;
+        view.window().has_winit_window()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = view;
+        true
+    }
+}
+
+fn raise(view: &WebBrowserWindow) {
+    #[cfg(target_os = "windows")]
+    {
+        use slint::winit_030::WinitWindowAccessor;
+        view.window().with_winit_window(|window| {
+            if window.is_minimized() == Some(true) {
+                window.set_minimized(false);
+            }
+            window.focus_window();
+        });
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = view;
+}
+
+fn wire_with(
+    ui: &AppWindow,
+    factory: Factory,
+    ready: Rc<dyn Fn(&WebBrowserWindow) -> bool>,
+) -> (Timer, Sessions) {
     let sessions: Sessions = Rc::new(RefCell::new([None, None]));
     let opening = Rc::clone(&sessions);
     let weak = ui.as_weak();
     ui.on_show_browser(move |help| {
         let index = usize::from(help);
-        if let Some(session) = opening.borrow().get(index).and_then(Option::as_ref) {
-            let _ = session.view.show();
+        let existing = opening.borrow()[index]
+            .as_ref()
+            .filter(|s| !s.closed.get())
+            .map(|s| s.view.clone_strong());
+        if let Some(view) = existing {
+            raise(&view);
             return;
+        }
+        if let Some(old) = opening.borrow_mut()[index].take() {
+            let _ = old.view.hide();
         }
         let result = (|| -> Result<Session, String> {
             let view = WebBrowserWindow::new().map_err(|e| e.to_string())?;
-            view.show().map_err(|e| e.to_string())?;
+            view.set_help_mode(help);
             let (tx, events) = mpsc::sync_channel(32);
-            let backend = match factory(&view, help, tx) {
-                Ok(b) => b,
-                Err(e) => {
-                    let _ = view.hide();
-                    return Err(e);
-                }
-            };
             let closed = Rc::new(Cell::new(false));
             let flag = Rc::clone(&closed);
             view.on_dismiss(move || flag.set(true));
@@ -281,17 +324,17 @@ fn wire_with(ui: &AppWindow, factory: Factory) -> (Timer, Sessions) {
                     Action::Home => view.on_home(callback),
                 }
             }
-            let mut session = Session {
-                backend,
+            view.show().map_err(|e| e.to_string())?;
+            Ok(Session {
+                pending: Some((Instant::now(), tx)),
+                backend: None,
                 view,
                 events,
                 closed,
                 help,
                 loading: None,
                 size: (0, 0, 0),
-            };
-            session.act(Action::Home);
-            Ok(session)
+            })
         })();
         match result {
             Ok(session) => opening.borrow_mut()[index] = Some(session),
@@ -313,22 +356,76 @@ fn wire_with(ui: &AppWindow, factory: Factory) -> (Timer, Sessions) {
     let ticking = Rc::clone(&sessions);
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_millis(50), move || {
-        for slot in ticking.borrow_mut().iter_mut() {
-            if slot.as_ref().is_some_and(|s| s.closed.get()) {
-                if let Some(s) = slot.take() {
-                    let _ = s.view.hide();
-                }
-            } else if let Some(s) = slot {
-                s.poll();
-            }
+        for index in 0..2 {
+            tick_session(&ticking, index, &factory, ready.as_ref());
         }
     });
     (timer, sessions)
 }
+
+fn tick_session(
+    sessions: &Sessions,
+    index: usize,
+    factory: &Factory,
+    ready: &dyn Fn(&WebBrowserWindow) -> bool,
+) {
+    let init = {
+        let mut slots = sessions.borrow_mut();
+        let slot = &mut slots[index];
+        let Some(s) = slot else { return };
+        if s.closed.get() {
+            let _ = s.view.hide();
+            *slot = None;
+            return;
+        }
+        let Some((since, _)) = &s.pending else {
+            s.poll();
+            return;
+        };
+        // show() may complete before Winit creates the secondary HWND.
+        if !ready(&s.view) {
+            if since.elapsed() > Duration::from_secs(10) {
+                s.pending = None;
+                s.view.set_status(
+                    "Das Fenster konnte nicht geöffnet werden. Bitte schließen und erneut öffnen."
+                        .into(),
+                );
+                s.view.set_startup_failed(true);
+            }
+            return;
+        }
+        s.pending
+            .take()
+            .map(|(_, tx)| (s.view.clone_strong(), s.help, tx, s.closed.clone()))
+    };
+    if let Some((view, help, tx, closed)) = init {
+        // WebView2 can dispatch window messages during initialization.
+        // Do not hold a sessions borrow or attach to a dismissed window.
+        let result = factory(&view, help, tx);
+        if let Some(s) = sessions.borrow_mut()[index]
+            .as_mut()
+            .filter(|s| Rc::ptr_eq(&s.closed, &closed) && !closed.get())
+        {
+            match result {
+                Ok(backend) => {
+                    s.backend = Some(backend);
+                    s.act(Action::Home);
+                }
+                Err(e) => {
+                    s.view.set_status(e.into());
+                    s.view.set_startup_failed(true);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_open;
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct Fake(Rc<RefCell<Vec<String>>>);
+    pub(super) struct Fake(pub(super) Rc<RefCell<Vec<String>>>);
     impl Backend for Fake {
         fn load(&self, url: &str) -> Result<(), String> {
             self.0.borrow_mut().push(url.into());
@@ -360,10 +457,13 @@ mod tests {
         let (_timer, state) = wire_with(
             &ui,
             Rc::new(move |_, _, _| Ok(Box::new(Fake(Rc::clone(&calls))))),
+            Rc::new(|_| true),
         );
         assert!(log.borrow().is_empty());
         ui.invoke_show_browser(false);
         ui.invoke_show_browser(true);
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(51));
+        slint::platform::update_timers_and_animations();
         assert_eq!(
             log.borrow().as_slice(),
             [web_policy::HOME_URL, web_policy::HELP_URL]
@@ -407,8 +507,11 @@ mod tests {
                 *capture.borrow_mut() = Some(tx);
                 Ok(Box::new(Fake(Rc::clone(&calls))))
             }),
+            Rc::new(|_| true),
         );
         ui.invoke_show_browser(false);
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(51));
+        slint::platform::update_timers_and_animations();
         let view = state.borrow()[0].as_ref().unwrap().view.clone_strong();
         let send = |event| {
             assert!(sender.borrow().as_ref().unwrap().try_send(event).is_ok());

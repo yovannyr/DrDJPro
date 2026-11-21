@@ -844,7 +844,7 @@ export component AppWindow inherits Window {
         if root.more-open : HorizontalLayout {
             height: 28px; spacing: 6px;
             Button {text:"WEB";accessible-label:"Open web browser";clicked=>{root.more-open=false;root.show-browser(false);}}
-            Button {text:"HELP";accessible-label:"Open bundled help";clicked=>{root.more-open=false;root.show-browser(true);}}
+            Button {text:"Hilfe";accessible-label:"Hilfe öffnen";clicked=>{root.more-open=false;root.show-browser(true);}}
             Button {text:"REPORTS";accessible-label:"Open crash report manager";clicked=>{root.more-open=false;root.show-crash-reports();}}
             Rectangle { horizontal-stretch: 1; }
         }
