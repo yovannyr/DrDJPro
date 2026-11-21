@@ -29,6 +29,12 @@ fn settings_routes_preserve_playback_and_keep_live_shortcuts_out_of_setup() {
     let imported = Rc::new(Cell::new(false));
     let observed = imported.clone();
     ui.on_show_itunes(move || observed.set(true));
+    let help_requests = Rc::new(Cell::new(0));
+    let observed = help_requests.clone();
+    ui.on_show_browser(move |help| {
+        assert!(help);
+        observed.set(observed.get() + 1);
+    });
     let cues = Rc::new(Cell::new(0));
     let observed = cues.clone();
     ui.on_hold_hot_cue_left(move |_, _, _| observed.set(observed.get() + 1));
@@ -81,9 +87,13 @@ fn settings_routes_preserve_playback_and_keep_live_shortcuts_out_of_setup() {
         assert_eq!(ui.invoke_external_drop_target(dest.x + 2., dest.y + 2.), 1);
         assert!(ui.get_left_playing());
         assert_eq!(ui.get_selected_track(), 9);
+        click(&ui, "More actions");
+        click(&ui, "Hilfe öffnen");
+        assert!(ElementHandle::find_by_accessible_label(&ui, "Hilfe öffnen")
+            .next()
+            .is_none());
     }
-    click(&ui, "More actions");
-    click(&ui, "Open bundled help");
+    assert_eq!(help_requests.get(), 2);
     ui.set_library_tab(1);
     click(&ui, "Open iTunes Music XML library");
     assert!(imported.get());

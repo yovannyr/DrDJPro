@@ -2,6 +2,7 @@
 use drdjpro_ui_spike::crash_handler::{CrashStore, ReportStatus};
 use std::{
     fs,
+    io::Read,
     path::Path,
     process::{Child, Command, Stdio},
     thread,
@@ -45,6 +46,7 @@ fn probe_with(
 ) {
     let temp = tempfile::tempdir().unwrap();
     let store = CrashStore::open(temp.path().join("reports")).unwrap();
+    let stderr_path = temp.path().join("probe.stderr");
     let start = Instant::now();
     let mut child = Command::new(env!("CARGO_BIN_EXE_drdjpro-ui-spike"))
         .arg(flag)
@@ -52,13 +54,22 @@ fn probe_with(
         .arg(mode)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(fs::File::create(&stderr_path).unwrap())
         .spawn()
         .unwrap();
     let status = wait(&mut child, Duration::from_secs(20));
     let elapsed = start.elapsed();
     let pid: u32 = fs::read_to_string(store.root().join("probe-monitor.pid"))
-        .unwrap()
+        .unwrap_or_else(|err| {
+            let mut diagnostic = Vec::new();
+            fs::File::open(stderr_path)
+                .and_then(|file| file.take(4096).read_to_end(&mut diagnostic))
+                .expect("read probe diagnostics");
+            panic!(
+                "{flag} {mode} ({status}): cannot read monitor PID: {err}\n{}",
+                String::from_utf8_lossy(&diagnostic)
+            );
+        })
         .parse()
         .unwrap();
     wait_for_monitor_exit(pid, Duration::from_secs(15));

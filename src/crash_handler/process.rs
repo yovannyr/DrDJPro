@@ -136,7 +136,7 @@ impl MonitorGuard {
         let mut child = command.spawn()?;
         let started = Instant::now();
         let client = loop {
-            let error = match Client::with_name(SocketName::Path(&socket)) {
+            let error = match connect_monitor(&socket) {
                 Ok(client) => break Arc::new(client),
                 Err(error) => error,
             };
@@ -247,6 +247,15 @@ impl MonitorGuard {
     pub fn process_id(&self) -> u32 {
         self.child.id()
     }
+}
+
+fn connect_monitor(socket: &Path) -> Result<Client, minidumper::Error> {
+    // On macOS the Unix socket starts listening before the Mach service exists.
+    // An early connection followed by a failed Mach lookup looks like the last
+    // client disconnected. Wait for the helper to publish both endpoints.
+    #[cfg(target_os = "macos")]
+    std::fs::metadata(socket.with_extension("ready"))?;
+    Client::with_name(SocketName::Path(socket))
 }
 
 impl Drop for MonitorGuard {
@@ -435,6 +444,12 @@ pub(super) fn run_monitor_limited(
     let _runtime_log = runtime_log::install(store.root(), Role::Monitor).ok();
     store.enforce_limits()?;
     let mut server = Server::with_name(SocketName::Path(socket)).map_err(io::Error::other)?;
+    #[cfg(target_os = "macos")]
+    if parent.is_some() {
+        // Each MonitorGuard owns a fresh private socket directory. Its lifetime
+        // also covers this empty marker, including normal shutdown and retries.
+        File::create_new(socket.with_extension("ready"))?;
+    }
     emit(Event::MonitorReady, None, None);
     let stop = Arc::new(AtomicBool::new(false));
     let connected = Arc::new(AtomicBool::new(false));
@@ -673,6 +688,21 @@ fn process_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn starting_monitor_does_not_receive_a_premature_client_connection() {
+        let directory = SocketDirectory::new().unwrap();
+        let socket = directory.path.join("ipc");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+
+        // Reproduce the startup interval with a listening socket and no Mach service.
+        assert!(
+            matches!(connect_monitor(&socket), Err(minidumper::Error::Io(e)) if e.kind() == io::ErrorKind::NotFound)
+        );
+        assert!(matches!(listener.accept(), Err(e) if e.kind() == io::ErrorKind::WouldBlock));
+    }
 
     #[test]
     fn blocked_ipc_peer_has_a_receive_deadline() {
