@@ -18,45 +18,59 @@ export component ModernChannelStrip inherits Rectangle {
     in property <float> meter: 0;
     in property <bool> monitored: false;
     in property <bool> monitor-available: false;
+    property <string> deck-name: "Deck " + ["A", "B", "C", "D"][root.deck-index];
     property <bool> controllable: root.active-view && root.supported && root.can-control;
     callback control-requested(int, ControlKind, float);
     callback gesture-ended(int);
     callback action(int, DeckAction);
-    width: 62px; background: #10141a;
+    width: 69px; background: #10141a;
     HorizontalLayout {
         padding: 3px; spacing: 2px;
         VerticalLayout {
             spacing: 0px;
             ModernKnob {
-                label: "Gain"; value: root.gain; accent: root.accent; enabled: root.controllable;
+                deck-name: root.deck-name; label: "Gain"; value: root.gain; accent: root.accent; enabled: root.controllable;
                 requested(value) => { root.control-requested(root.deck-index, ControlKind.gain, value); }
                 gesture-ended => { root.gesture-ended(root.deck-index); }
             }
             ModernKnob {
-                label: "High"; value: root.high; accent: root.accent; enabled: root.controllable;
+                deck-name: root.deck-name; label: "High"; value: root.high; neutral-value: 2 / 3;
+                accent: root.accent; enabled: root.controllable;
                 requested(value) => { root.control-requested(root.deck-index, ControlKind.high, value); }
                 gesture-ended => { root.gesture-ended(root.deck-index); }
             }
             ModernKnob {
-                label: "Mid"; value: root.mid; accent: root.accent; enabled: root.controllable;
+                deck-name: root.deck-name; label: "Mid"; value: root.mid; neutral-value: 2 / 3;
+                accent: root.accent; enabled: root.controllable;
                 requested(value) => { root.control-requested(root.deck-index, ControlKind.mid, value); }
                 gesture-ended => { root.gesture-ended(root.deck-index); }
             }
             ModernKnob {
-                label: "Low"; value: root.low; accent: root.accent; enabled: root.controllable;
+                deck-name: root.deck-name; label: "Low"; value: root.low; neutral-value: 2 / 3;
+                accent: root.accent; enabled: root.controllable;
                 requested(value) => { root.control-requested(root.deck-index, ControlKind.low, value); }
                 gesture-ended => { root.gesture-ended(root.deck-index); }
             }
             ModernKnob {
-                label: "Filter"; value: root.filter; accent: root.accent; enabled: root.controllable;
+                deck-name: root.deck-name; label: "Filter"; value: root.filter; accent: root.accent; enabled: root.controllable;
                 requested(value) => { root.control-requested(root.deck-index, ControlKind.filter, value); }
                 gesture-ended => { root.gesture-ended(root.deck-index); }
             }
-            HoldButton {
+            pfl := HoldButton {
                 text: "PFL"; active: root.monitored; accent: root.accent;
+                accessibility-label: root.deck-name + " PFL";
+                accessible-checkable: true;
+                accessible-checked: root.monitored;
+                accessible-description: root.monitor-available ? "Pre-fader headphone cue" :
+                    "Independent headphone cue requires an output device with at least four channels.";
+                background: root.monitored ? root.accent.darker(60%) : ModernTheme.raised;
+                if root.monitored : Rectangle {
+                    x: 2px; y: 3px; width: 3px; height: parent.height - 6px;
+                    background: root.accent;
+                }
+                if root.supported : Tooltip { text: @markdown("\{pfl.accessible-description}"); }
                 enabled: root.controllable && root.monitor-available;
                 started => { root.action(root.deck-index, DeckAction.monitor); }
-                canceled => { }
             }
         }
         VerticalLayout {

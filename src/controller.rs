@@ -936,7 +936,10 @@ impl AudioController {
                                 "Headphone cue updated (session only)"
                             }
                             .to_string(),
-                            Err(error) => error,
+                            Err(error) => {
+                                ui.set_status(error.as_str().into());
+                                error
+                            }
                         };
                         ui.set_monitor_status(status.into());
                     }
@@ -12720,6 +12723,165 @@ mod tests {
             engine.eq_settings(DeckId::B),
             crate::mixer_dsp::EqSettings::default()
         );
+    }
+
+    #[test]
+    fn modern_mixer_pointer_controls_drive_eq_and_pfl_on_both_decks() {
+        use slint::platform::{PointerEventButton::Left, WindowEvent};
+        use slint::LogicalPosition;
+
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = AppWindow::new().unwrap();
+        let (mixer, _output) = rodio::mixer::mixer(4, 48000);
+        let engine = Rc::new(DualDeckEngine::from_mixer(mixer, 4, 48000));
+        let c = AudioController::wire(&ui, engine.clone(), Arc::new(|| None), Arc::new(|| None));
+        ui.set_view_mode(crate::LayoutMode::Modern);
+        ui.show().unwrap();
+        ui.window()
+            .dispatch_event(WindowEvent::WindowActiveChanged(true));
+        let center = |element: &ElementHandle| {
+            let origin = element.absolute_position();
+            let size = element.size();
+            LogicalPosition::new(origin.x + size.width / 2., origin.y + size.height / 2.)
+        };
+        let press = |position| {
+            ui.window().dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: Left,
+            });
+        };
+        let release = |position| {
+            ui.window().dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: Left,
+            });
+        };
+        let settings = |id| {
+            let eq = engine.eq_settings(id);
+            [eq.trim, eq.high, eq.mid, eq.low, eq.filter]
+        };
+        let knobs = [
+            ("Gain", -12., 12.),
+            ("High", -24., 12.),
+            ("Mid", -24., 12.),
+            ("Low", -24., 12.),
+            ("Filter", -1., 1.),
+        ];
+        for (width, height, four_slots) in [
+            (850., 860., false),
+            (1280., 860., false),
+            (850., 1020., true),
+        ] {
+            ui.set_four_decks(four_slots);
+            ui.window().set_size(slint::LogicalSize::new(width, height));
+            let deck_top = control(&ui, "Hide track library").absolute_position().y;
+            let library_top = control(&ui, "Track library area").absolute_position().y;
+            let check_position = |point: LogicalPosition, label: &str| {
+                assert!(
+                    (0. ..width).contains(&point.x)
+                        && (deck_top..library_top).contains(&point.y)
+                        && point.y < height,
+                    "{label} outside the visible deck area at {width}x{height}: {point:?}"
+                );
+            };
+            for (deck, other) in [(DeckId::A, DeckId::B), (DeckId::B, DeckId::A)] {
+                let other_eq = settings(other);
+                for (field, (name, min, max)) in knobs.into_iter().enumerate() {
+                    let label = format!("Deck {deck:?} {name}");
+                    let knob = control(&ui, &label);
+                    let origin = center(&knob);
+                    check_position(origin, &label);
+                    let indicator = knob
+                        .query_descendants()
+                        .match_id("ModernKnob::indicator")
+                        .find_first()
+                        .expect("visible rotary marker");
+                    let neutral = center(&indicator);
+                    assert!(
+                        (neutral.x - origin.x).abs() < 1.5,
+                        "{label} neutral at twelve o'clock"
+                    );
+                    press(origin);
+                    let mut expected = settings(deck);
+                    ui.window().dispatch_event(WindowEvent::PointerMoved {
+                        position: LogicalPosition::new(origin.x, origin.y - 15.),
+                    });
+                    let partial = settings(deck)[field];
+                    assert!(
+                        partial > 0. && partial < max,
+                        "{label} responds before the endpoint"
+                    );
+                    assert!(
+                        center(&indicator).x > neutral.x,
+                        "{label} rotates during the drag"
+                    );
+                    for (offset, value, normalized) in [(-120., max, 1.), (120., min, 0.)] {
+                        let position = LogicalPosition::new(origin.x, origin.y + offset);
+                        ui.window()
+                            .dispatch_event(WindowEvent::PointerMoved { position });
+                        expected[field] = value;
+                        assert_eq!(settings(deck), expected, "{label} at width {width}");
+                        assert_eq!(settings(other), other_eq, "{label} changed the other deck");
+                        let displayed = knob.accessible_value().unwrap().parse::<f32>().unwrap();
+                        assert_eq!(displayed, normalized, "{label} feedback");
+                        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(250));
+                        let tip = center(&indicator);
+                        assert!(tip.y > neutral.y, "{label} endpoint below neutral");
+                        assert_eq!(
+                            tip.x > neutral.x,
+                            normalized == 1.,
+                            "{label} turn direction"
+                        );
+                    }
+                    ui.window()
+                        .dispatch_event(WindowEvent::PointerMoved { position: origin });
+                    release(origin);
+                    i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(250));
+                }
+                let label = format!("Deck {deck:?} PFL");
+                let pfl = control(&ui, &label);
+                check_position(center(&pfl), &label);
+                for enabled in [true, false] {
+                    pfl.mock_single_click(Left);
+                    assert_eq!(
+                        engine.headphone_cue(deck),
+                        enabled,
+                        "{label} at width {width}"
+                    );
+                    assert_eq!(pfl.accessible_checked(), Some(enabled));
+                    assert!(!engine.headphone_cue(other));
+                }
+            }
+        }
+        engine.set_output_pair(1).unwrap();
+        let pfl = control(&ui, "Deck B PFL");
+        pfl.mock_single_click(Left);
+        assert!(!engine.headphone_cue(DeckId::B));
+        assert_eq!(pfl.accessible_checked(), Some(false));
+        assert!(ui.get_status().contains("master pair"));
+        finish_search(&c);
+        ui.hide().unwrap();
+    }
+
+    #[test]
+    fn modern_mixer_pfl_stays_off_on_stereo_output() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = AppWindow::new().unwrap();
+        let (mixer, _output) = rodio::mixer::mixer(2, 48000);
+        let engine = Rc::new(DualDeckEngine::from_mixer(mixer, 2, 48000));
+        let c = AudioController::wire(&ui, engine.clone(), Arc::new(|| None), Arc::new(|| None));
+        ui.set_view_mode(crate::LayoutMode::Modern);
+        ui.show().unwrap();
+        assert!(!ui.get_monitor_available());
+        for deck in [DeckId::A, DeckId::B] {
+            let pfl = control(&ui, &format!("Deck {deck:?} PFL"));
+            assert_eq!(pfl.accessible_enabled(), Some(false));
+            pfl.mock_single_click(slint::platform::PointerEventButton::Left);
+            assert!(!engine.headphone_cue(deck));
+            assert_eq!(pfl.accessible_checked(), Some(false));
+        }
+        finish_search(&c);
+        ui.hide().unwrap();
     }
 
     #[test]
