@@ -124,50 +124,78 @@ export component ValueRail inherits Rectangle {
     }
 }
 
-// Presentation-only knob. Pointer drag produces normalized values; keyboard +/- is supported.
+// The mixer owns the value, including updates from the hardware controller.
 export component ModernKnob inherits Rectangle {
     in property <string> label;
+    in property <string> deck-name;
     in property <float> value: 0.5;
+    in property <float> neutral-value: 0.5;
     in property <bool> enabled: false;
     in property <color> accent: ModernTheme.text;
     callback requested(float);
     callback gesture-ended();
-    min-width: 44px; preferred-width: 48px;
-    height: 60px;
+    min-width: 34px; preferred-width: 44px;
+    min-height: 27px; preferred-height: 50px; max-height: 56px;
     forward-focus: keys;
+    accessible-role: slider;
+    accessible-label: root.deck-name + " " + root.label;
+    accessible-enabled: root.enabled;
+    accessible-value: root.value;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 1;
+    accessible-value-step: 0.01;
+    accessible-action-set-value(v) => {
+        if root.enabled && v.is-float() { root.requested(clamp(v.to-float(), 0, 1)); }
+    }
+    // Center detent is 0 dB even for the asymmetric EQ range (-24 to +12 dB).
+    property <float> offset: clamp(root.value, 0, 1) - root.neutral-value;
+    property <angle> pointer-angle: 135deg * root.offset /
+        (root.offset < 0 ? root.neutral-value : 1 - root.neutral-value);
+    animate pointer-angle { duration: root.dragging ? 0ms : 70ms; easing: ease-out; }
     wheel := Rectangle {
-        x: (parent.width - 32px) / 2; y: 2px;
-        width: 32px; height: 32px; border-radius: 16px;
+        width: min(32px, root.height - 15px); height: self.width;
+        x: (parent.width - self.width) / 2; y: (root.height - self.height - 13px) / 2;
+        border-radius: self.width / 2;
         background: #222932; border-width: 1px;
         border-color: keys.has-focus ? #eeeeee : ModernTheme.line;
+        indicator := Rectangle {
+            width: 5px; height: 5px; border-radius: 2.5px;
+            x: (parent.width - self.width) / 2 + (parent.width / 2 - 4px) * sin(root.pointer-angle);
+            y: (parent.height - self.height) / 2 - (parent.height / 2 - 4px) * cos(root.pointer-angle);
+            background: root.enabled ? root.accent : ModernTheme.muted;
+        }
     }
     Text {
-        y: 38px; height: 16px; text: root.label; color: ModernTheme.muted;
+        y: wheel.y + wheel.height; height: 13px; text: root.label; color: ModernTheme.muted;
         font-size: 10px; horizontal-alignment: center; vertical-alignment: center;
     }
     property <float> drag-value: 0.5;
     property <bool> dragging: false;
+    function finish-drag() {
+        if root.dragging { root.dragging = false; root.gesture-ended(); }
+    }
     touch := TouchArea {
         enabled: root.enabled;
         pointer-event(event) => {
-            if event.kind == PointerEventKind.cancel {
-                if root.dragging { root.dragging = false; root.gesture-ended(); }
-            } else if event.button == PointerEventButton.left {
-                if event.kind == PointerEventKind.down {
-                    keys.focus(); root.drag-value = root.value; root.dragging = true;
-                } else if event.kind == PointerEventKind.up {
-                    if root.dragging { root.dragging = false; root.gesture-ended(); }
-                }
+            if event.kind == PointerEventKind.cancel || event.kind == PointerEventKind.up {
+                root.finish-drag();
+            } else if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                keys.focus(); root.drag-value = root.value; root.dragging = true;
             }
         }
         moved => { if root.dragging { root.requested(clamp(root.drag-value + (self.pressed-y - self.mouse-y) / 120px, 0, 1)); } }
     }
-    changed enabled => { if !root.enabled && root.dragging { root.dragging = false; root.gesture-ended(); } }
+    changed enabled => { if !root.enabled { root.finish-drag(); } }
     keys := FocusScope {
         width: 0px; height: 0px; enabled: root.enabled;
+        focus-lost(reason) => { root.finish-drag(); }
         key-pressed(event) => {
-            if event.text == "+" { root.requested(clamp(root.value + 0.01, 0, 1)); return accept; }
-            if event.text == "-" { root.requested(clamp(root.value - 0.01, 0, 1)); return accept; }
+            if event.text == "+" || event.text == Key.UpArrow || event.text == Key.RightArrow {
+                root.requested(clamp(root.value + 0.01, 0, 1)); return accept;
+            }
+            if event.text == "-" || event.text == Key.DownArrow || event.text == Key.LeftArrow {
+                root.requested(clamp(root.value - 0.01, 0, 1)); return accept;
+            }
             return reject;
         }
     }
