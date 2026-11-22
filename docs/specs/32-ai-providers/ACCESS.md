@@ -1,0 +1,22 @@
+# Provider access decision (G-AI0)
+
+Checked on 22 November 2026 for the publicly distributed, locally running Dr. DJ Pro desktop application. The preset table in `src/ai_registry/types.rs` controls which connections Settings offers. An OpenAI-compatible wire format alone establishes neither an account integration nor a billing agreement.
+
+| Preset | Verified access | Consumer plan decision and source |
+| --- | --- | --- |
+| OpenAI | Personal API key for Chat Completions, model discovery and supported embeddings. Eligible users can separately authorize plan usage in a local open-source app. | Enable the official dynamic client registration and streamed Responses flow for the fixed OpenAI origin. Use the issued client ID, fresh PKCE and per-installation host ID. Access depends on the account and workspace. [Open-source app eligibility](https://developers.openai.com/siwc/token-sharing-open-source), [registration](https://developers.openai.com/siwc/token-sharing-open-source/sign-in), [sessions and revocation](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions), [inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) |
+| Anthropic | Personal API key for Messages and model discovery. | Disable subscription sign-in. Anthropic reserves Claude subscription credentials for its own applications. [Authentication and credential use](https://code.claude.com/docs/en/legal-and-compliance), [Messages streaming](https://platform.claude.com/docs/en/build-with-claude/streaming) |
+| Google Gemini | Gemini Developer API key for models, generation and supported embeddings. | Disable subscription sign-in. The documented developer route uses an API project with its own limits. [API access](https://ai.google.dev/gemini-api/docs/get-started), [API pricing](https://ai.google.dev/gemini-api/docs/pricing) |
+| Mistral | Personal Studio API key, using the compatible chat API. | Disable subscription sign-in. The vendor documents its application plans and developer API separately. No third-party plan grant was verified. [Mistral product and API guide](https://help.mistral.ai/en/articles/682992-le-chat-is-now-vibe), [Chat API](https://docs.mistral.ai/api/endpoint/chat) |
+| Custom | An endpoint and optionally a key issued by its operator. | No preset subscription agreement or client registration. Use the supported protocol operations and review the operator's policy. |
+| Ollama, LM Studio, llama.cpp | The running local server's OpenAI-compatible API. Default loopback ports are 11434, 1234 and 8080 respectively. | No subscription sign-in. Moving the endpoint off the computer subjects it to the cloud data policy. [Ollama](https://docs.ollama.com/api/openai-compatibility), [LM Studio](https://lmstudio.ai/docs/developer/openai-compat), [llama.cpp server](https://github.com/ggml-org/llama.cpp/tree/master/tools/server) |
+
+Recheck vendor eligibility, endpoints, UI guidance and credential rules before adding a new subscription preset or changing the distribution model. A change in plan availability must surface in the selected connection. Users can review their own usage and grants in [ChatGPT usage settings](https://chatgpt.com/settings/usage).
+
+The sign-in button uses OpenAI's supplied white ChatGPT mark. Its welcome dialog and usage link follow the vendor's [UI guidelines](https://developers.openai.com/siwc/ui-ux-guidelines). [Original button artwork](https://developers.openai.com/assets/siwc/chatgpt-logo-white.svg)
+
+## Worker HTTP and cancellation
+
+Inference, discovery, and OAuth HTTP share the provider worker's synchronous interface. The worker drives the current-thread Tokio executor already linked by reqwest. This replaces the private executor and thread that each blocking reqwest client previously created. The executor starts on first HTTP use and serves successive operations. UI and audio callbacks never run it. Native TLS, disabled redirects and disabled transparent retries apply to both provider and OAuth HTTP.
+
+While waiting for headers or another body chunk, the worker checks cancellation and the absolute deadline at intervals of up to 25 ms. The original I/O future stays pinned across checks, so a delayed response does not repeat the request. Cancellation or timeout drops the pending operation and shuts down its executor to release parked connection tasks even while the worker is idle. The next operation lazily creates a new executor. The SSE parser consumes at most one pending HTTP chunk at a time and retains its existing body limit.

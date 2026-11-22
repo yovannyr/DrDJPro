@@ -319,6 +319,18 @@ fn main() -> Result<(), slint::PlatformError> {
         None
     };
     let mut midi_discovery = std::time::Instant::now();
+    let selected = controller.as_ref().map(Rc::downgrade);
+    ai_settings_ui::wire(
+        &ui,
+        move || selected.as_ref()?.upgrade()?.selected_ai_metadata(),
+        || {
+            let file = library_store::default_path()?;
+            ai_registry::AiRegistry::open(
+                file.parent()
+                    .ok_or("Kein Speicherort für KI-Einstellungen")?,
+            )
+        },
+    );
     let _usb_finder_timer = usb_finder::wire(&ui);
     let _hid_finder_timer = hid_finder::wire(&ui);
     let _remote_display_timer = remote_display::wire(&ui);

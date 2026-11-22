@@ -2,7 +2,7 @@ import { Button, CheckBox, ComboBox } from "std-widgets.slint";
 import { DjTheme } from "theme.slint";
 import { LibraryButton } from "controls.slint";
 
-export enum SettingsTab { decks, audio, mixer, library, controller }
+export enum SettingsTab { decks, audio, mixer, library, controller, ai }
 
 export component SettingsFrame inherits Rectangle {
     in property <SettingsTab> tab;
@@ -26,7 +26,8 @@ export component SettingsFrame inherits Rectangle {
                 { title: "Audio", tab: SettingsTab.audio },
                 { title: "Mixer", tab: SettingsTab.mixer },
                 { title: "Library & Ansicht", tab: SettingsTab.library },
-                { title: "Controller", tab: SettingsTab.controller }
+                { title: "Controller", tab: SettingsTab.controller },
+                { title: "KI", tab: SettingsTab.ai }
             ]: LibraryButton {
                 text: item.title; accessible-label: "Settings: " + item.title;
                 accessible-description: root.tab == item.tab ? "Ausgewählter Einstellungsbereich" : "";

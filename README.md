@@ -35,6 +35,8 @@ Der Installer braucht keine Rust-Entwicklungsumgebung. Die Windows-Vorschau ist 
 
 ## Musikdateien und optionale Erweiterungen
 
+Unter **Einstellungen → KI** kannst du lokale Modelle, eigene API-Schlüssel und ein berechtigtes ChatGPT-Konto einrichten. Du wählst pro Funktion das Modell und entscheidest, ob Titel und Interpret deinen Computer verlassen dürfen. [KI-Anbieter einrichten](docs/wiki/KI-Anbieter.md)
+
 MP3, WAV, FLAC, AIFF/AIF, M4A mit AAC-LC oder ALAC sowie Ogg mit Vorbis oder Opus gehören zum lokalen Ladepfad. Bei Opus werden einzelne Mono- und Stereostreams unterstützt. Der enthaltene Codec entscheidet über die Wiedergabe. Cover im JPEG- oder PNG-Format werden bei Bedarf als Miniaturen im Arbeitsspeicher gehalten. [Library und Vorbereitung](docs/wiki/Library-und-Vorbereitung.md)
 
 Für eigene Builds gibt es modellgestütztes Beat-/Downbeat-Tracking, vorberechnete Stems und eine optionale DVS-Anbindung. Ein separates lokales Hilfsprogramm kann ähnliche Tracks und Übergänge vorschlagen oder einem MCP-Client lesenden Zugriff auf die Library geben. Der eingebettete Windows-Browser dient zum Stöbern. [Analyse und Erweiterungen](docs/wiki/Analyse-und-Erweiterungen.md) · [Controller und Anschlüsse](docs/wiki/Controller-und-Anschluesse.md)
