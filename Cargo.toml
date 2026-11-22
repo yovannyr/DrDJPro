@@ -83,6 +83,7 @@ keyring = { version = "=3.6.3", default-features = false, features = ["apple-nat
 keyring = { version = "=3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust", "vendored"] }
 
 [dev-dependencies]
+rsa = { version = "=0.9.10", default-features = false, features = ["getrandom", "sha2", "u64_digit"] }
 native-tls = "=0.2.18"
 minidump = "0.22"
 tempfile = "=3.27.0"

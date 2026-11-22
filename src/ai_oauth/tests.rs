@@ -1,14 +1,48 @@
 use super::*;
+use rsa::{rand_core::OsRng, traits::PublicKeyParts, Pkcs1v15Sign, RsaPrivateKey};
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader, Write},
     net::TcpStream,
+    sync::OnceLock,
     thread,
 };
 
-fn fixture() -> Value {
-    serde_json::from_str(include_str!("test-identities.json")).unwrap()
+fn fixture() -> &'static Value {
+    static FIXTURE: OnceLock<Value> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        // Only signed mock replies and their public key outlive this setup.
+        let key = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","kid":"fixture"}"#);
+        let sign = |claims: &Value| {
+            let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).unwrap());
+            let input = format!("{header}.{encoded}");
+            let signature = key
+                .sign(
+                    Pkcs1v15Sign::new::<Sha256>(),
+                    &Sha256::digest(input.as_bytes()),
+                )
+                .unwrap();
+            format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature))
+        };
+        let issued = now();
+        let claims = json!({
+            "iss": ISSUER, "aud": "fixture-client", "sub": "fixture-subject",
+            "iat": issued, "exp": issued + 3600, "nonce": "fixture-nonce"
+        });
+        let mut missing_nonce = claims.clone();
+        missing_nonce.as_object_mut().unwrap().remove("nonce");
+        let mut multiple_audiences = claims.clone();
+        multiple_audiences["aud"] = json!(["fixture-client", "other-client"]);
+        json!({
+            "jwks": {"keys": [{"kid":"fixture","kty":"RSA","alg":"RS256","use":"sig",
+                "n":URL_SAFE_NO_PAD.encode(key.n().to_bytes_be()),
+                "e":URL_SAFE_NO_PAD.encode(key.e().to_bytes_be())}]},
+            "id": sign(&claims), "missing_nonce": sign(&missing_nonce),
+            "multi_without_azp": sign(&multiple_audiences)
+        })
+    })
 }
 
 #[derive(Default)]
@@ -246,7 +280,7 @@ fn id_signature_nonce_audience_expiry_and_algorithm_are_required() {
         nonce: "fixture-nonce",
         refresh: false,
         access_token: "test",
-        now: 2_000_000_000,
+        now: now(),
     };
     let id = f["id"].as_str().unwrap();
     assert_eq!(
@@ -275,7 +309,7 @@ fn id_signature_nonce_audience_expiry_and_algorithm_are_required() {
         id,
         &jwks,
         identity::Expected {
-            now: 4_102_444_800,
+            now: u64::MAX,
             ..expected()
         }
     )
