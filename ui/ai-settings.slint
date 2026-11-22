@@ -1,0 +1,310 @@
+import { Button, CheckBox, ComboBox, LineEdit, ListView, TextEdit } from "std-widgets.slint";
+import { DjTheme } from "theme.slint";
+
+export struct AiForm {
+    id: string, name: string, preset: int, kind: int, url: string, model: string,
+    chat: bool, streaming: bool, tools: bool, embeddings: bool, context: string, limit: string,
+}
+export struct AiEntry { form: AiForm, details: string, has-key: bool, plan-enabled: bool, status: string, usage: string }
+export struct AiFeatureChoice { provider: int, model: string, consent: bool }
+export struct AiFoundModel { caption: string, preset: int, model: string }
+export enum AiOperation { reload, test, models, detect, duplicate, remove, clear-secrets, sign-in, disconnect, manage-usage }
+
+// Only freshly entered credentials cross submit(). Snapshots contain configuration and status.
+export global AiPage {
+    in-out property <[AiForm]> presets;
+    in-out property <[string]> preset-names;
+    in-out property <[AiEntry]> entries;
+    in-out property <[string]> names;
+    in-out property <[AiFeatureChoice]> bindings;
+    in-out property <[string]> model-list;
+    in-out property <string> model-owner;
+    in-out property <[AiFoundModel]> discovered;
+    in-out property <[string]> discovered-names;
+    in-out property <int> selection: -1;
+    in-out property <int> edit-generation;
+    in-out property <bool> ready;
+    in-out property <bool> welcome;
+    in-out property <bool> working;
+    in-out property <bool> cancellable;
+    in-out property <bool> local-only: true;
+    in-out property <string> vault-note;
+    in-out property <string> status;
+    in-out property <string> output;
+    callback operation(AiOperation, string);
+    callback submit(AiForm, string, bool, bool);
+    callback policy(bool);
+    callback bind-feature(int, string, string, bool);
+    callback clear-binding(int);
+    callback revoke(int, string);
+    callback run-feature(int);
+    callback cancel();
+    pure callback is-local(string) -> bool;
+    pure callback supports-login(int) -> bool;
+    pure callback custom-endpoint(int) -> bool;
+}
+
+component Label inherits Text {
+    color: DjTheme.text-primary;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+export component AiSettings inherits VerticalLayout {
+    in property <bool> track-selected;
+    private property <bool> features;
+    private property <bool> show-welcome: AiPage.welcome;
+    private property <string> fresh-key;
+    private property <AiForm> draft;
+    private property <int> feature-index;
+    private property <int> bound-provider: -1;
+    private property <string> bound-model;
+    private property <bool> consent;
+    private property <bool> http-confirmed;
+    private property <bool> confirm-removal;
+    private property <bool> confirm-purge;
+    private property <int> generation: AiPage.edit-generation;
+    private property <bool> saved: AiPage.selection >= 0 && AiPage.selection < AiPage.entries.length;
+    private property <bool> cloud: root.bound-provider >= 0 && root.bound-provider < AiPage.entries.length
+        && !AiPage.is-local(AiPage.entries[root.bound-provider].form.url);
+    private property <bool> compatible: root.bound-provider >= 0 && root.bound-provider < AiPage.entries.length
+        && (root.feature-index == 0 ? AiPage.entries[root.bound-provider].form.chat && AiPage.entries[root.bound-provider].form.tools
+        : root.feature-index == 1 ? AiPage.entries[root.bound-provider].form.embeddings : AiPage.entries[root.bound-provider].form.chat);
+    private property <bool> network-warning: root.draft.url != "" && !AiPage.is-local(root.draft.url)
+        && (root.draft.kind == 1 || root.draft.url.starts-with("http://"));
+    private property <bool> active: AiPage.ready && !AiPage.working;
+    private property <bool> can-run: root.bound-provider >= 0 && root.feature-index < AiPage.bindings.length
+        && root.bound-provider == AiPage.bindings[root.feature-index].provider
+        && root.bound-model == AiPage.bindings[root.feature-index].model && root.compatible
+        && (!root.cloud || (!AiPage.local-only && root.consent && AiPage.bindings[root.feature-index].consent));
+    function reset-form(index: int) {
+        root.fresh-key = "";
+        if index >= 0 && index < AiPage.entries.length {
+            root.draft = AiPage.entries[index].form;
+        } else if AiPage.presets.length > 0 {
+            root.draft = AiPage.presets[0];
+        }
+        root.http-confirmed = false;
+        root.confirm-removal = false;
+        root.confirm-purge = false;
+    }
+    function edit(index: int) { AiPage.selection = index; root.reset-form(index); }
+    function load-binding() {
+        if root.feature-index >= 0 && root.feature-index < AiPage.bindings.length {
+            let binding = AiPage.bindings[root.feature-index];
+            root.bound-provider = binding.provider;
+            root.bound-model = binding.model;
+            root.consent = binding.consent;
+        }
+    }
+    changed generation => { root.reset-form(AiPage.selection); root.load-binding(); }
+    changed show-welcome => { if root.show-welcome { welcome-popup.show(); } }
+    init => { root.reset-form(AiPage.selection); root.load-binding(); if root.show-welcome { welcome-popup.show(); } }
+    welcome-popup := PopupWindow {
+        x: (root.width - self.width) / 2; y: 55px; width: 390px; height: 175px;
+        close-policy: no-auto-close;
+        Rectangle {
+            background: DjTheme.panel-dark; border-color: DjTheme.text-secondary; border-width: 1px; border-radius: 5px;
+            VerticalLayout {
+                padding: 16px; spacing: 10px;
+                Label { text: "Du verwendest deinen ChatGPT-Tarif"; font-size: 18px; }
+                Text { color: DjTheme.text-primary; wrap: word-wrap;
+                    text: "Freigegebene Anfragen nutzen deinen ChatGPT-Tarif. In den ChatGPT-Nutzungseinstellungen kannst du Verbrauch und Limits verwalten."; }
+                Button { text: "Verstanden"; accessible-label: "Dismiss ChatGPT plan introduction";
+                    clicked => { AiPage.welcome = false; welcome-popup.close(); } }
+            }
+        }
+    }
+    spacing: 7px;
+    HorizontalLayout {
+        height: 31px; spacing: 6px;
+        Button { text: "Anbieter"; enabled: !AiPage.working; clicked => { root.features = false; } }
+        Button { text: "Funktionen"; enabled: !AiPage.working; clicked => { root.features = true; root.load-binding(); } }
+        Rectangle { horizontal-stretch: 1; }
+        CheckBox { text: "Nur lokale KI"; checked: AiPage.local-only; enabled: root.active;
+            accessible-label: "Local AI only"; toggled => { AiPage.policy(self.checked); } }
+    }
+    Label { height: 22px; text: AiPage.vault-note; }
+    if !root.features : HorizontalLayout {
+        spacing: 12px;
+        VerticalLayout {
+            min-width: 180px; preferred-width: 220px; spacing: 5px;
+            Label { text: "Registrierte Anbieter"; }
+            ListView {
+                height: 190px; accessible-label: "Registered AI providers";
+                for entry[i] in AiPage.entries : Button {
+                    height: 66px; text: entry.form.name + "\n" + entry.details + "\n" + entry.form.model + " · " + entry.status;
+                    accessible-label: "AI provider " + entry.form.name; enabled: root.active;
+                    clicked => { root.edit(i); }
+                }
+            }
+            Button { text: "Neuer Anbieter"; enabled: root.active; clicked => { root.edit(-1); } }
+            Button { text: "Lokale KI erkennen"; enabled: root.active; clicked => { AiPage.operation(AiOperation.detect, ""); } }
+            if AiPage.discovered.length > 0 : ComboBox {
+                accessible-label: "Discovered local models"; model: AiPage.discovered-names; current-index: -1; enabled: root.active;
+                selected => {
+                    let found = AiPage.discovered[self.current-index];
+                    root.edit(-1); root.draft = AiPage.presets[found.preset]; root.draft.model = found.model;
+                }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+        VerticalLayout {
+            spacing: 5px;
+            HorizontalLayout {
+                height: 30px; spacing: 5px;
+                Label { text: "Vorlage"; width: 90px; }
+                ComboBox { model: AiPage.preset-names; current-index: root.draft.preset; enabled: root.active && !root.saved;
+                    accessible-label: "AI provider preset"; selected => { let choice = self.current-index; root.reset-form(-1); root.draft = AiPage.presets[choice]; } }
+                if AiPage.supports-login(root.draft.preset) : ComboBox {
+                    model: ["API-Schlüssel", "ChatGPT-Abo"]; current-index: root.draft.kind == 2 ? 1 : 0;
+                    enabled: root.active && !root.saved; accessible-label: "AI connection kind";
+                    selected => {
+                        root.fresh-key = "";
+                        root.draft.kind = self.current-index == 1 ? 2 : 0;
+                        if root.draft.kind == 2 { root.draft.url = AiPage.presets[root.draft.preset].url; root.draft.embeddings = false; }
+                    }
+                }
+                if AiPage.custom-endpoint(root.draft.preset) : ComboBox {
+                    model: ["API-Schlüssel", "Modellserver"]; current-index: root.draft.kind == 1 ? 1 : 0;
+                    enabled: root.active && !root.saved; accessible-label: "Custom endpoint connection kind";
+                    selected => { root.fresh-key = ""; root.draft.kind = self.current-index == 1 ? 1 : 0; }
+                }
+            }
+            HorizontalLayout { height: 30px; spacing: 5px;
+                Label { text: "Name"; width: 90px; }
+                LineEdit { text: root.draft.name; accessible-label: "AI provider name"; enabled: root.active;
+                    edited => { root.draft.name = self.text; } }
+            }
+            HorizontalLayout { height: 30px; spacing: 5px;
+                Label { text: "Basis-URL"; width: 90px; }
+                LineEdit { text: root.draft.url; accessible-label: "AI provider base URL"; enabled: root.active && root.draft.kind != 2;
+                    edited => { root.draft.url = self.text; root.http-confirmed = false; root.fresh-key = ""; } }
+            }
+            if root.network-warning : CheckBox {
+                text: root.draft.url.starts-with("http://") ? "HTTP an einen anderen Rechner · nur ohne Schlüssel zulassen" : "Daten an einen anderen Rechner senden · zulassen";
+                enabled: root.active; checked <=> root.http-confirmed; accessible-label: "Confirm remote endpoint";
+            }
+            if AiPage.local-only && root.draft.url != "" && !AiPage.is-local(root.draft.url) : Label {
+                text: "Nur lokale KI ist aktiv. Für Cloud-Tests und Anfragen oben ausschalten.";
+            }
+            HorizontalLayout { height: 30px; spacing: 5px;
+                Label { text: "Modell"; width: 90px; }
+                LineEdit { text: root.draft.model; accessible-label: "AI default model"; enabled: root.active;
+                    edited => { root.draft.model = self.text; } }
+                Button { text: "Modelle abrufen"; enabled: root.active && root.saved;
+                    clicked => { AiPage.operation(AiOperation.models, root.draft.id); } }
+            }
+            if root.saved && AiPage.model-owner == root.draft.id && AiPage.model-list.length > 0 : ComboBox {
+                accessible-label: "Available AI models"; model: AiPage.model-list; current-index: -1; enabled: root.active;
+                selected(value) => { root.draft.model = value; }
+            }
+            HorizontalLayout { height: 30px; spacing: 5px;
+                Label { text: "Tokenlimit"; width: 90px; }
+                LineEdit { text: root.draft.limit; placeholder-text: "0 = kein weiches Limit";
+                    accessible-label: "Provider session token limit"; enabled: root.active;
+                    edited => { root.draft.limit = self.text; } }
+                Label { text: "Kontext"; }
+                LineEdit { text: root.draft.context; placeholder-text: "unbekannt"; accessible-label: "Context window tokens"; enabled: root.active;
+                    edited => { root.draft.context = self.text; } }
+            }
+            HorizontalLayout { height: 27px; spacing: 4px;
+                CheckBox { text: "Chat"; checked: root.draft.chat; enabled: root.active; toggled => { root.draft.chat = self.checked; } }
+                CheckBox { text: "Streaming"; checked: root.draft.streaming; enabled: root.active; toggled => { root.draft.streaming = self.checked; } }
+                CheckBox { text: "Tools"; checked: root.draft.tools; enabled: root.active; toggled => { root.draft.tools = self.checked; } }
+                CheckBox { text: "Embeddings"; checked: root.draft.embeddings; enabled: root.active && root.draft.kind != 2; toggled => { root.draft.embeddings = self.checked; } }
+            }
+            if root.draft.kind != 2 : Label {
+                text: root.draft.kind == 1 ? "Lokaler Modellserver · Schlüssel optional"
+                    : "API-Zugang · Der Anbieter rechnet Anfragen über das API-Konto ab.";
+            }
+            if root.draft.kind == 2 : Label {
+                text: root.saved && AiPage.entries[AiPage.selection].plan-enabled ? "Using ChatGPT plan"
+                    : root.saved && AiPage.entries[AiPage.selection].has-key ? "Konto verbunden · Tarifzugang derzeit nicht verfügbar"
+                    : "ChatGPT-Abo · Freigegebene Anfragen nutzen deinen ChatGPT-Tarif.";
+            }
+            // Clear newly typed credentials whenever an editor is reused.
+            input := LineEdit {
+                visible: root.draft.kind != 2; height: self.visible ? 30px : 0px; input-type: password;
+                enabled: root.active && self.visible && !(root.network-warning && root.draft.url.starts-with("http://")); accessible-label: "New AI credential";
+                text <=> root.fresh-key;
+                accessible-value: "";
+                accessible-action-set-value(value) => { self.text = value; }
+                placeholder-text: root.saved && AiPage.entries[AiPage.selection].has-key ? "Gespeicherter Schlüssel · zum Ersetzen hier eingeben" : "API-Schlüssel";
+            }
+            HorizontalLayout { height: 32px; spacing: 5px;
+                Button { text: "Speichern"; accessible-label: "Save AI provider"; enabled: root.active && (!root.network-warning || root.http-confirmed);
+                    clicked => { AiPage.submit(root.draft, input.text, root.http-confirmed, false); input.text = ""; } }
+                if !root.saved && root.draft.kind != 2 : Button { text: "Speichern und testen";
+                    accessible-label: "Save and test AI provider"; enabled: root.active && (!root.network-warning || root.http-confirmed);
+                    clicked => { AiPage.submit(root.draft, input.text, root.http-confirmed, true); input.text = ""; } }
+                if root.saved : Button { text: "Verbindung testen"; enabled: root.active; accessible-label: "Test AI connection";
+                    clicked => { AiPage.operation(AiOperation.test, root.draft.id); } }
+                Button { text: "Duplizieren"; enabled: root.active && root.saved;
+                    clicked => { AiPage.operation(AiOperation.duplicate, root.draft.id); } }
+                Button { text: root.confirm-removal ? "Entfernen bestätigen" : "Entfernen"; enabled: root.active && root.saved;
+                    clicked => { if root.confirm-removal { AiPage.operation(AiOperation.remove, root.draft.id); } root.confirm-removal = !root.confirm-removal; } }
+            }
+            if root.saved && root.draft.kind == 2 : HorizontalLayout {
+                height: 30px; spacing: 5px;
+                // Official button artwork: https://developers.openai.com/assets/siwc/chatgpt-logo-white.svg
+                Button { text: "Continue with ChatGPT"; icon: @image-url("../assets/chatgpt-sign-in-white.svg");
+                    enabled: root.active && !AiPage.entries[AiPage.selection].has-key && !AiPage.local-only;
+                    clicked => { AiPage.operation(AiOperation.sign-in, root.draft.id); } }
+                Button { text: "Konto trennen"; enabled: root.active && AiPage.entries[AiPage.selection].has-key;
+                    clicked => { AiPage.operation(AiOperation.disconnect, root.draft.id); } }
+                Button { text: "ChatGPT-Nutzung verwalten"; enabled: root.active; clicked => { AiPage.operation(AiOperation.manage-usage, root.draft.id); } }
+            }
+            if root.saved : Label { text: AiPage.entries[AiPage.selection].status + " · " + AiPage.entries[AiPage.selection].usage; }
+            if root.saved && root.draft.kind != 2 && AiPage.entries[AiPage.selection].has-key : Button {
+                text: "Schlüssel dieses Anbieters entfernen"; enabled: root.active;
+                clicked => { AiPage.operation(AiOperation.disconnect, root.draft.id); }
+            }
+            Button { text: root.confirm-purge ? "Alle KI-Zugangsdaten endgültig löschen" : "Alle KI-Zugangsdaten entfernen";
+                enabled: root.active && AiPage.entries.length > 0;
+                clicked => { if root.confirm-purge { AiPage.operation(AiOperation.clear-secrets, ""); } root.confirm-purge = !root.confirm-purge; } }
+        }
+    }
+    if root.features : VerticalLayout {
+        spacing: 8px;
+        HorizontalLayout { height: 32px; spacing: 6px;
+            ComboBox { model: ["Assistent", "Embeddings", "Erklärungen"]; current-index <=> root.feature-index;
+                accessible-label: "AI feature"; enabled: root.active; selected => { AiPage.output = ""; root.load-binding(); } }
+            ComboBox { model: AiPage.names; current-index: root.bound-provider; enabled: root.active && AiPage.entries.length > 0;
+                accessible-label: "Bound AI provider"; selected => {
+                    root.bound-provider = self.current-index; root.bound-model = AiPage.entries[self.current-index].form.model; root.consent = false;
+                } }
+            LineEdit { text: root.bound-model; placeholder-text: "Modell"; accessible-label: "Bound AI model"; enabled: root.active;
+                edited => { root.bound-model = self.text; } }
+        }
+        if root.bound-provider < 0 : Label { text: "Deaktiviert. Wähle einen Anbieter und speichere die Zuordnung."; }
+        if root.bound-provider >= 0 && !root.compatible : Label {
+            text: root.feature-index == 0 ? "Der Assistent benötigt Chat und Tool-Aufrufe." : root.feature-index == 1 ? "Dieses Modell unterstützt keine Embeddings." : "Erklärungen benötigen Chat.";
+        }
+        if root.cloud : CheckBox { text: "Titel und Interpret für diese Funktion an " + AiPage.entries[root.bound-provider].form.name + " senden";
+            checked <=> root.consent; enabled: root.active && !AiPage.local-only; accessible-label: "Consent to cloud track metadata"; }
+        if root.bound-provider >= 0 && AiPage.entries[root.bound-provider].form.kind == 2 : HorizontalLayout {
+            height: 32px; spacing: 6px;
+            Label { text: AiPage.entries[root.bound-provider].plan-enabled ? "Using ChatGPT plan" : "ChatGPT-Tarif derzeit nicht verfügbar"; }
+            Button { text: "ChatGPT-Nutzung verwalten"; enabled: root.active;
+                clicked => { AiPage.operation(AiOperation.manage-usage, AiPage.entries[root.bound-provider].form.id); } }
+        }
+        HorizontalLayout { height: 32px; spacing: 6px;
+            Button { text: "Zuordnen"; enabled: root.active && root.compatible && root.bound-model != "" && (!root.cloud || (root.consent && !AiPage.local-only));
+                clicked => { AiPage.bind-feature(root.feature-index, AiPage.entries[root.bound-provider].form.id, root.bound-model, root.consent); } }
+            Button { text: "Zuordnung lösen"; enabled: root.active && AiPage.bindings[root.feature-index].provider >= 0;
+                clicked => { AiPage.clear-binding(root.feature-index); } }
+            Button { text: "Freigabe widerrufen"; enabled: root.active && AiPage.bindings[root.feature-index].consent;
+                clicked => { AiPage.revoke(root.feature-index, AiPage.entries[AiPage.bindings[root.feature-index].provider].form.id); } }
+        }
+        Label { text: root.track-selected ? "Library-Auswahl · Titel und Interpret" : "Wähle einen Titel in der Library, um die Funktion auszuführen."; }
+        Button { text: "Für gewählten Titel ausführen"; enabled: root.active && root.track-selected && root.can-run;
+            accessible-label: "Run AI feature on selected track"; clicked => { AiPage.run-feature(root.feature-index); } }
+        TextEdit { text: AiPage.output; read-only: true; height: 140px; accessible-label: "AI response"; }
+    }
+    HorizontalLayout { height: 42px; spacing: 6px;
+        Text { text: AiPage.status; wrap: word-wrap; color: DjTheme.text-primary; vertical-alignment: center; horizontal-stretch: 1; }
+        if AiPage.cancellable : Button { text: "Abbrechen"; clicked => { AiPage.cancel(); } }
+        if !AiPage.ready && !AiPage.working : Button { text: "Erneut laden"; clicked => { AiPage.operation(AiOperation.reload, ""); } }
+    }
+}

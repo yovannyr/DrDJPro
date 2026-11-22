@@ -9,6 +9,8 @@ export { WebBrowserWindow } from "web_view.slint";
 export { ItunesWindow,ItunesRow } from "itunes.slint";
 export { CrashReportsWindow,CrashReportRow } from "crash-reports.slint";
 import { SettingsFrame, SettingsTab, QuantizeGridRow } from "settings.slint";
+import { AiSettings, AiPage, AiOperation } from "ai-settings.slint";
+export { AiPage, AiOperation, AiForm, AiEntry, AiFeatureChoice, AiFoundModel } from "ai-settings.slint";
 import { LayoutMode } from "layout-modes.slint";
 import { DeckAction, HoldAction, ControlKind, JogPhase } from "modern-state.slint";
 import { ModernView } from "modern-view.slint";
@@ -70,7 +72,9 @@ export component AppWindow inherits Window {
     private property <SettingsTab> settings-tab: SettingsTab.decks;
     private property <bool> controller-seen;
     function select-settings(tab: SettingsTab) {
+        if root.settings-tab == SettingsTab.ai && tab != SettingsTab.ai { AiPage.cancel(); AiPage.output = ""; }
         root.settings-tab = tab;
+        if tab == SettingsTab.ai { AiPage.operation(AiOperation.reload, ""); }
         root.audio-device-open = tab == SettingsTab.audio && root.audio-enabled;
         root.monitor-open = tab == SettingsTab.mixer && root.audio-enabled;
         root.usb-finder-open = tab == SettingsTab.controller;
@@ -91,6 +95,7 @@ export component AppWindow inherits Window {
         settings-frame.focus-back();
     }
     function close-settings() {
+        if root.settings-tab == SettingsTab.ai { AiPage.cancel(); AiPage.output = ""; }
         root.settings-open = false;
         root.audio-device-open = false;
         root.monitor-open = false;
@@ -1380,6 +1385,7 @@ Rectangle {
                 toggled => { root.change-table-column(column.id, 0); }
             }
         }
+        if root.settings-open && root.settings-tab == SettingsTab.ai : AiSettings { track-selected: root.selected-track >= 0; }
         if root.settings-open && root.settings-tab == SettingsTab.controller : HorizontalLayout {
             height: 32px; spacing: 8px;
             Button { text: "RECONNECT MIDI"; accessible-label: "Reconnect MC4000 controller"; enabled: root.audio-enabled; clicked => { root.controller-reconnect-requested = true; } }

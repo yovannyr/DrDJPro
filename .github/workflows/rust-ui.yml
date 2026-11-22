@@ -130,6 +130,22 @@ jobs:
         # Isolate process/dump wall-clock tests from other harness cases.
         # Tests which exercise concurrency still create their own threads.
         run: cargo test --workspace --locked --target ${{ matrix.target }} -- --test-threads=1
+      - name: Test vault restart with Windows Credential Manager or macOS Keychain
+        if: runner.os != 'Linux'
+        timeout-minutes: 3
+        run: cargo test --locked --lib --target ${{ matrix.target }} credentials::tests::native_restart_uses_os_key_in_independent_process -- --exact --ignored
+      - name: Test vault restart with an unlocked Linux Secret Service
+        if: runner.os == 'Linux'
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          sudo apt-get install -y gnome-keyring dbus
+          export XDG_RUNTIME_DIR="$(mktemp -d)"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          dbus-run-session -- bash -eu -c '
+            printf %s ci-disposable-keyring | gnome-keyring-daemon --unlock --components=secrets
+            cargo test --locked --lib --target x86_64-unknown-linux-gnu credentials::tests::native_restart_uses_os_key_in_independent_process -- --exact --ignored
+          '
       - name: Verify release decoder on real MP3
         run: cargo run --locked --release --target ${{ matrix.target }} -- --analyze tests/fixtures/sample-9s.mp3
       - name: Archive audio fixture source

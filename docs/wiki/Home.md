@@ -12,6 +12,7 @@
 | Cues, Loops, Sync, Effekte und Sampler spielen | [Decks und Mixer](Decks-und-Mixer.md) |
 | Kopfhörer, MC4000, HID oder einen zweiten Bildschirm anschließen | [Controller und Anschlüsse](Controller-und-Anschluesse.md) |
 | Beats und Phrasen analysieren oder Stems und lokale Vorschläge nutzen | [Analyse und Erweiterungen](Analyse-und-Erweiterungen.md) |
+| einen KI-Anbieter verbinden und festlegen, welche Trackdaten er erhält | [KI-Anbieter einrichten](KI-Anbieter.md) |
 | ein Audio- oder Library-Problem eingrenzen oder einen Fehler melden | [Hilfe und Diagnose](Hilfe-und-Diagnose.md) |
 | das Projekt mit Logo, Kurzbeschreibung und Downloadlink vorstellen | [Pressekit](Pressekit.md) |
 
