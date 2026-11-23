@@ -193,3 +193,39 @@ As a DJ with different workflows, I want multiple view modes (list, grid) so I c
 - Playlist version history or undo
 - Automatic duplicate removal
 - iTunes/Rekordbox/Serato library import (separate feature)
+
+## Geplante Erweiterungen für die Vorbereitung eines Sets
+
+Die folgenden Anforderungen ergänzen die oben genannten Library-Funktionen. Ob das Verhalten in Classic und Modern funktioniert, ist bei der Umsetzung zu prüfen. Die Reihenfolge steht im [Umsetzungsplan für die 35 Ideen](../MIXED_IN_KEY_UMSETZUNGSPLAN.md).
+
+### D03
+
+**Tonart und Energie auf dem Cover.** FR-012 fordert Ansichten mit Artwork. Die [Cover-Anzeige](../../cover-artwork.md) liefert bereits eingepasste Miniaturen. Eine Tonartbeschriftung samt optionaler Energie fehlt im bisherigen Vertrag.
+
+**REQ-D03** In Classic und Modern muss eine abschaltbare Einblendung auf der Library-Miniatur die bestätigte Tonart in Camelot-Schreibweise und, falls vorhanden, den gültigen Energiewert darstellen. Ohne Artwork dient der Platzhalter als Hintergrund. Auswahlzustand und Text müssen auch in der kleinsten unterstützten Zelle erkennbar sein. Die Einblendung verwendet die vorhandenen Katalogwerte und verändert weder Bild noch Audiodatei.
+
+**AC-D03** Dieselben Titel mit Artwork, ohne Artwork und mit unbekannter Energie in beiden Ansichten auswählen. Bei bekannter Tonart ist sie auf Bild und Platzhalter lesbar. Für unbekannte Werte erscheint kein erfundener Zahlenwert. Umschalten bewahrt die Auswahl und die unverzerrte Miniatur. Dateiprüfsummen vor und nach dem Test stimmen überein.
+
+### R04
+
+**Dubletten und verschiedene Edits vor dem Import unterscheiden.** FR-017 verlangt Dublettenerkennung. Der [Bibliotheksspeicher](../../../src/library_store.rs) verwaltet eindeutige Pfadschlüssel. Die Ergänzung definiert, was als identische Datei gilt und wann der DJ selbst entscheiden muss.
+
+**REQ-R04** Vor dem Übernehmen muss der Import bytegleiche Dateien unter verschiedenen Pfaden als exakte Kopien erkennen. Ähnlichkeiten bei Titel, Interpret, Version oder Länge dürfen nur eine prüfbare Variantengruppe ergeben. Jeder Treffer zeigt beide Pfade und die Grundlage des Treffers. Unlesbare oder während der Prüfung geänderte Dateien erhalten den Status „nicht geprüft“. Die Auswahl legt der DJ fest.
+
+**AC-R04** Eine bytegleiche Kopie unter anderem Namen, ein Radio- und ein Extended-Edit desselben Titels sowie zwei gleich große Dateien mit unterschiedlichem Inhalt importieren. Nur die Kopie wird als exakt ausgewiesen. Die Edits bleiben einzeln auswählbar. Abbruch und ein erneuter Scan erhalten Dateien, Cues und Crate-Zuordnungen. Eine unlesbare Datei darf keinen bestätigten Treffer erzeugen.
+
+### R05
+
+**Herkunft abweichender BPM- und Tonartwerte.** FR-009 umfasst die Metadatenbearbeitung. [Spec 21](../21-track-preparation/spec.md) fordert manuelle Korrekturen und Reanalyse. Der [Metadatenleser](../../../src/track_metadata.rs) ist eine Grundlage für die hier geforderte Anzeige der einzelnen Quellen.
+
+**REQ-R05** Eine schreibgeschützte Diagnose muss den gespeicherten Dateitag, die letzte verfügbare Audioanalyse und den wirksamen Katalogwert je Feld getrennt benennen. Fehlende oder unlesbare Quellen bleiben gekennzeichnet. Bei widersprüchlichen Werten erklärt die App den Befund und bietet einen prüfbaren nächsten Schritt an. Bei möglichem Halb- oder Doppeltempo verweist sie auf den [Hörvergleich D04](../3-bpm-detection/spec.md#d04).
+
+**AC-R05** Bei 85 BPM im Tag, 170 BPM im Katalog und fehlender Analyse zeigt die Ansicht beide Zahlen mit korrekter Herkunft und die fehlende Analyse. Eine zweite Datei mit abweichendem Tonart-Tag und manueller Korrektur zeigt beide Tonarten. Das Öffnen oder Schließen der Diagnose verändert weder die Prüfsumme der schreibgeschützten Datei noch die Korrektur im Katalog.
+
+### R01
+
+**Wortspiel-Übergänge aus eigenen Stichwörtern.** FR-004 ermöglicht die Metadatensuche und [Spec 21, FR-007 bis FR-009](../21-track-preparation/spec.md) beschreibt benannte Cues. Der neue Treffer identifiziert neben dem Titel die genaue, vom DJ markierte Stelle.
+
+**REQ-R01** Der DJ muss ein oder mehrere eigene Stichwörter an einer Stelle im Titel speichern, titelübergreifend suchen und jeden Treffer ab seiner Position im Kopfhörer vorhören können. Treffer zeigen Titel, Begriff und Position. Ändern, Entfernen und erneutes Öffnen der Library müssen die aktuelle Zuordnung widerspiegeln. Die Suche benötigt weder externen Liedtext noch einen Cloud-Dienst.
+
+**AC-R01** Zwei Titel mit dem gleichen Begriff bei 12 und 47 Sekunden markieren und neu öffnen. Die Suche liefert beide Zeitpunkte. In getrennt aufgezeichneten Ausgängen beginnt die gewählte Vorschau an ihrer Markierung am Kopfhörer, der Master enthält keine Vorschau. Nach dem Entfernen einer Markierung bleibt nur der andere Treffer. Bei fehlendem separaten Vorhörausgang bleibt die Vorschau gesperrt und die App erklärt den Grund.

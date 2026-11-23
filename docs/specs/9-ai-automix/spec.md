@@ -174,3 +174,23 @@ As a DJ preparing for a performance, I want to preview and manually adjust AI-ge
 - Mood or emotion-based track selection
 - Lyrics or vocal compatibility analysis
 - Automatic effect application during transitions
+
+## Geplante Erweiterungen der lokalen Trackauswahl
+
+Beide Abläufe sind Vorschauen in der Vorbereitung. Der [lokale Bibliotheksassistent](../../../tools/library_assistant.py) bewertet heute einzelne Kandidaten. Prioritäten und Abhängigkeiten stehen im [Umsetzungsplan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md).
+
+### A08
+
+**Kandidaten nach erlaubter Transposition streuen.** FR-002, FR-004 und FR-011 sowie [Spec 25, FR-025-006 und FR-025-007](../25-enhanced-harmonic-mixing/spec.md) begründen harmonische Empfehlungen. Hinzu kommen eine harte Halbton-Grenze und reproduzierbare Alternativen.
+
+**REQ-A08** Bei der Suche muss der DJ den maximalen absoluten Halbtonversatz einstellen können. Jeder transponierbare Treffer nennt Originaltonart und empfohlenen vorzeichenbehafteten Versatz des Kandidaten. Alternativen werden aus den zulässigen Versatzgruppen gewonnen. Bei identischem Datenstand, Ziel und Startwert ist die Reihenfolge reproduzierbar. Unbekannte Tonarten begründen keine Transpositions-Empfehlung. Ein Vorschlag ändert keine Tonhöhe eines laufenden Decks.
+
+**AC-A08** Einen Katalog mit bekannten Treffern für 0, ±1 und ±2 Halbtöne und einem Titel ohne Tonart prüfen. Beim Limit 0 sind alle empfohlenen Versätze null, beim Limit 1 kommt kein ±2-Treffer vor. Derselbe Startwert ergibt dieselbe Liste. Verschiedene festgelegte Startwerte liefern bei genügend gleichwertigen Alternativen mindestens zwei unterschiedliche zulässige Listen. Bleiben nur unzulässige Kandidaten, meldet die App das leere Ergebnis.
+
+### R03
+
+**Ein Brückentitel zwischen festem Start und Ziel.** FR-002, FR-006, FR-011, FR-012 und FR-014 decken Paarbewertung, Sequenzen, Vorschau und Datenlücken ab. Der neue Suchauftrag fixiert beide Endpunkte und bewertet einen gemeinsamen Zwischenkandidaten.
+
+**REQ-R03** Aus zwei verschiedenen Titeln A und C muss die App einen geeigneten dritten Titel B suchen können. Jeder Vorschlag muss die Bewertung für A → B und B → C getrennt ausweisen und die jeweils verfügbaren Aus- und Einstiegspunkte zum Vorhören anbieten. Jeder Schenkel berücksichtigt die aktiven Tempo-, Tonart- und Ausschlusskriterien. Unbekannte Daten und fehlende Hörstellen sind sichtbar. Die Suche startet keine Deckwiedergabe.
+
+**AC-R03** Eine kontrollierte Crate enthält einen Kandidaten mit bestem A-Anschluss, der für C die gesetzte Tempogrenze verletzt, sowie einen Kandidaten, der beide Übergänge erfüllt. Nur der zweite ist eine gültige Brücke. Beide Hörproben verwenden die zugehörigen Track- und Cue-Positionen. Fällt ein für die harten Kriterien benötigter Wert weg, meldet die App, dass der Weg nicht belegt ist. A und C dürfen nie als ihr eigener Zwischentitel erscheinen.

@@ -337,3 +337,7 @@ Für jede Zeile gelten zusätzlich die gemeinsamen Q-Regeln oben. Die konkreten 
 **Nächster konkreter Slice:** G01 — Konflikt- und Messregister sowie native Architektur-ADR erstellen, alle Originalanforderungen mit dem Register abgleichen und ungelöste Entscheidungen kenntlich machen. Zuvor den aktuellen Arbeitsbaum und HEAD erneut prüfen; noch keine Produktimplementierung.
 
 **Herkunft dieses Plans:** GPT-6.1 Sol koordinierte die Aufgabe; QWEN und DeepSeek liefen zuvor in Timeouts. GPT-6.1 Terra, medium, verfasste den Plan als ausdrücklich gewählter Fallback. Unabhängiges Dokumentationsreview: GPT-6.1 Sol, medium; wesentliche Befunde zur Reihenfolge, FR-Zuordnung und Freischaltung wurden behoben und nachgeprüft. Der ergänzte Abschlussslice für FR16-002 und die vollständige Registerzuordnung wurden anschließend mechanisch geprüft. Dies ist keine Laufzeit- oder Hardwareabnahme.
+
+## Weiterführende Planung
+
+Der [Umsetzungsplan für die 35 Feature-Ideen](MIXED_IN_KEY_UMSETZUNGSPLAN.md) beginnt mit dem 85/170-BPM-Hörvergleich und ordnet die geplanten Änderungen den Bestandsspecs und den neuen Specs 33–37 zu.

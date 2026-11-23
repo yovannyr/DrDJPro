@@ -195,3 +195,18 @@ As a DJ preparing tracks, I want saved loop pads to instantly recall preset loop
 - Undo/redo for hot cue placement
 - Pad performance macros or sequences
 - Touch screen multi-touch pad triggering
+
+## Geplante Erweiterung für das Üben mit Hot Cues
+
+Der [Umsetzungsplan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md) ordnet diese Erweiterung ein. Die folgenden Kriterien beschreiben eine künftige Abnahme.
+
+### D09
+
+**Kurze Hook-Folgen üben.** FR-003/004 decken Setzen und Abruf einzelner Hot Cues ab. [Spec 21](../21-track-preparation/spec.md) FR-007–009 liefert benannte Startpunkte. Es fehlt ein Übungsdurchlauf über mehrere Tracks mit auswertbaren Wechselzeiten. Vorbild ist die [Power-Block-Übung](https://mixedinkey.com/harmonic-mixing-guide/power-block-dj-mixing-tutorial/).
+
+**REQ-D09** In Prepare muss der DJ drei bis fünf Track-/Cue-Paare in eine Reihenfolge bringen, je Wechsel ein Zeitfenster festlegen und die Übung ausdrücklich starten können. Der DJ löst die Wechsel selbst aus. Die Auswertung zeigt Sollzeit, tatsächliche Zeit relativ zum Übungsstart, Abweichung und übersprungene Einträge. Übungsergebnisse gehören zum Durchlauf. Manuelle Cues behalten ihre Position. Die Übung muss mit den vier erreichbaren MC4000-Pads je Deck bedienbar sein, auch wenn zwei Hooks denselben Padplatz auf verschiedenen Tracks benutzen.
+
+**AC-D09** Die Abnahme verwendet eine kontrollierte Uhr und bekannte Cue-Positionen.
+
+- Drei Hooks mit Zielwechseln bei 30 und 60 Sekunden spielen. Ein Wechsel bei 31 Sekunden und einer bei 58 Sekunden erscheinen als +1 und −2 Sekunden. Titel und Cue stimmen auch bei wiederverwendeter Padnummer.
+- Den mittleren Hook überspringen. Der Bericht kennzeichnet ihn als übersprungen und schreibt ihm keine erfundene Istzeit zu. Abbrechen beendet die Übung und erhält die ursprünglichen Cues und ihre Reihenfolge im Track.

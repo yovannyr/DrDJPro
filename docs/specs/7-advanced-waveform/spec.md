@@ -177,3 +177,16 @@ As a DJ with different workflow preferences, I want multiple waveform styles (ov
 - Machine learning-based audio feature detection
 - Waveform comparison or similarity matching
 - MIDI or musical note overlay on waveform
+
+## Geplante Ergänzung zur Prepare-Wellenform
+
+### A05
+
+**Perkussive und tonale Anteile.** FR-003 und FR-004 beschreiben Frequenzbänder und frequenzabhängige Farben. Der [vorhandene Farbverlauf](../../../src/waveform_color.rs) unterscheidet dadurch einen Kick-Impuls und einen gehaltenen Ton im gleichen Register noch nicht zuverlässig.
+
+**REQ-A05** Prepare erhält eine umschaltbare Ansicht mit separat erkennbaren perkussiven und tonalen Anteilen entlang derselben Zeitachse. Sie behält Zoom, Abspielposition, Cues und Auswahl beim Wechsel bei. Die Berechnung erfolgt im Hintergrund, getrennt von der optionalen Vier-Stem-Analyse. Bis das Ergebnis zur aktuellen Dateiversion passt, bleibt die normale Wellenform nutzbar.
+
+**AC-A05** Geplante Abnahme:
+
+1. Eine Testdatei enthält im gleichen Frequenzbereich zunächst vier isolierte Kick-Impulse, dann einen gehaltenen Synthton und zuletzt beide Signale zusammen. An den Impulsen dominiert der perkussive Anteil, im stationären Mittelteil des Tons der tonale. In der gemeinsamen Passage sind beide zu erkennen. Ein Stilleabschnitt zeigt keine Energie.
+2. Das Modellpaket für Stems ist nicht installiert. Während der Hintergrundberechnung zwischen zwei Titeln und den beiden Ansichten wechseln. Es erscheint ausschließlich das Ergebnis für den gewählten Titel. Vorhandene Cues behalten ihre Zeitposition und der Wechsel löst kein Seek aus.

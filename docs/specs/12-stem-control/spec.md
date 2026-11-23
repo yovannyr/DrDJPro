@@ -178,3 +178,16 @@ As a performing DJ, I want to switch between stem combinations in real-time so I
 - Stem MIDI note detection
 - Lyric transcription from vocal stems
 - Stem-to-MIDI conversion
+
+## Geplante Ergänzung zur Übergangsprobe
+
+### R08
+
+**Überlappenden Gesang erkennen.** FR-001, FR-004, FR-009 und FR-010 decken Stems, Cache, Wellenformen und Vorhören ab. FR-011 fordert Synchronität innerhalb eines Tracks. Die neue Anforderung betrifft den zeitlichen Versatz zwischen zwei vorbereiteten Titeln.
+
+**REQ-R08** Prepare projiziert die sicher erkannten Gesangspassagen zweier Titel auf dasselbe Übergangsfenster. Nur Schnittmengen innerhalb dieses Fensters werden markiert. Ändert der DJ Startposition oder Abspieltempo, folgt die Markierung der neuen Ausrichtung. Die Stelle lässt sich über PFL als Paar vorhören. Fehlende Vocal-Stems oder unsichere Erkennung werden kenntlich gemacht. Fehlt ein vorbereitetes Ergebnis, bleibt die normale Deck-Wiedergabe verfügbar.
+
+**AC-R08** Geplante Abnahme:
+
+1. Zwei zeitlich referenzierte Vocal-Spuren mit Gesang in Sekunde 4–8 und 6–10 bei gleichem Tempo ergeben eine Markierung in Sekunde 6–8. Die Grenzen dürfen für die Testdatei um höchstens 250 ms abweichen. B um vier Sekunden nach hinten schieben. Die Markierung verschwindet. Die PFL-Vorschau startet an der jeweils angezeigten Position, ohne den Master zu verändern.
+2. Zwei vorbereitete reine Instrumentalspuren erzeugen keine Gesangsmarkierung. Wird stattdessen ein benötigter Stem entfernt, zeigt die Ansicht die fehlende Datenbasis. Die leere Erkennung eines Instrumentalpaars bleibt von diesem Zustand unterscheidbar.

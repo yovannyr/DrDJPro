@@ -345,3 +345,23 @@ DJs create and use 3+ smart playlists on average within first month
 - 'bpm': BPM progression
 - 'genre': Genre-based grouping
 - 'mood': Mood/vibe similarity
+
+## Geplante Erweiterungen für einzelne Auftritte
+
+Die folgenden Verträge ergänzen Kriterien, Sequenzierung und Vorschau. Sie sind im [Umsetzungsplan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md) zur späteren Prüfung eingeordnet.
+
+### R02
+
+**Musikwünsche und Ausschlüsse pro Auftritt.** FR-024-003 filtert eine Ausschlussliste, FR-024-006 berücksichtigt bereits gespielte Titel. Der zusätzliche Vertrag bindet Vorgaben, Begründung und Erfüllungsstand an einen konkreten Auftritt. Der [Katalog](../../../src/library_store.rs) bietet dafür Track-IDs und Verlauf als Ausgangspunkt.
+
+**REQ-R02** Für einen Auftritt muss der DJ pro Titel genau einen Status „Muss laufen“, „Wunsch“ oder „Heute meiden“ und eine optionale Begründung speichern und korrigieren können. „Heute meiden“ filtert Vorschläge für diesen Auftritt und bleibt bei der manuellen Auswahl als Hinweis sichtbar. Ein Pflichttrack gilt im aktiven Auftritt mit seinem bestätigten Abspieleintrag als erfüllt. Vorhören, bloßes Laden und vor dem Auftritt gespeicherte Verlaufseinträge erfüllen den Wunsch nicht.
+
+**AC-R02** Für zwei Auftritte mit demselben Titel in Gig A „Heute meiden“ und in Gig B „Muss laufen“ setzen. Nach einem Neustart muss der Titel in A aus den Vorschlägen fallen und in B weiter wählbar sein. Vorhören hält ihn dort offen. Ein dem Gig B zugeordneter Abspieleintrag erfüllt ihn genau einmal. Eine Änderung des Status oder der Begründung in B darf Gig A nicht beeinflussen.
+
+### R06
+
+**Eine Crate mit festen Ankertracks ordnen.** FR-024-004 und FR-024-012 beschreiben Sequenzierung und Regeneration. FR-024-011 und FR-024-014 beschreiben Übergangsqualität. Ergänzt werden die feste Position einzelner Einträge und die ausdrückliche Übernahme einer von mehreren Varianten.
+
+**REQ-R06** Der DJ muss für eine geordnete Setliste mit allen vorgesehenen Crate-Einträgen einzelne Positionen fixieren können, etwa Opener, Höhepunkt und Schluss. Für die übrigen Plätze erzeugt die App bei ausreichender Auswahl zwei bis drei verschiedene Vorschauen. Jede enthält dieselben Einträge mit derselben Häufigkeit. Schwierige Übergänge müssen begründet und vorhörbar sein. Die ursprüngliche Liste wird erst nach Bestätigung ersetzt. Bei zwischenzeitlichen Änderungen der Ausgangsliste verlangt die App eine erneute Vorschau.
+
+**AC-R06** In einem Set mit zwölf verschiedenen Titeln die Positionen 1, 7 und 12 fixieren. Jede erzeugte Variante muss diese Anker bewahren und alle zwölf Einträge genau einmal enthalten. Ein absichtlich schwieriger Übergang zeigt seinen Grund und lässt sich im Kopfhörer prüfen. Abbrechen lässt die Ausgangsreihenfolge unverändert. Sind alle Positionen fixiert, erscheint keine vorgetäuschte Alternative. Wird vor dem Übernehmen ein Eintrag entfernt, bleibt die neuere Liste erhalten.

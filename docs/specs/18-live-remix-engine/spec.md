@@ -194,3 +194,41 @@ As a DJ with signature remix styles, I want to save complete remix setups (slice
 - Automatic beat-matching between slices from different tracks
 - Visual waveform editing (zoom, splice, fade editing)
 - Slice quantization correction (assumes perfect beat grid)
+
+## Geplante Erweiterungen für das Spielen mit Abschnitten und Mustern
+
+Priorität und Reihenfolge stehen im [Umsetzungsplan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md). Die Erweiterungen verwenden das gespeicherte Beatgrid, die musikalische Position des Transportes und vorbereitete Samples. Audio-, Hardware- und Hörabnahmen stehen aus.
+
+### D06
+
+**Zum nächsten Abschnitt blenden.** FR-001/005/006 beschreiben rasterbezogene Slices und nahtlose Wiedergabe. [Spec 17](../17-beat-grid-sync/spec.md) FR-006–009 liefert Taktanfang, Quantisierung und Rasterposition. Es fehlt der vorher ankündbare, überblendete Sprung im bereits laufenden Deck. [Flow 8 Deck](https://mixedinkey.com/flow-dj-software/)
+
+**REQ-D06** Ein gewählter Cue oder Abschnitt muss im laufenden Deck als Sprungziel vormerkbar und bis zur Ausführung widerrufbar sein. Am nächsten gültigen Taktanfang muss der Zielabschnitt mit seinem markierten Einstieg unter einer kurzen, definierten Überblendung einsetzen. Die Wellenform zeigt das vorgemerkte Ziel. Ein Trackwechsel, Stopp oder nicht auflösbares Beatgrid verwirft die Vormerkung mit sichtbarem Status. Das andere Deck und die gespeicherten Cues behalten ihren Zustand.
+
+**AC-D06** Die Abnahme trennt musikalische Zielgenauigkeit, Überblendverlauf und Rechenzeit.
+
+- Bei 48 kHz und 120 BPM einen Sprung zwischen zwei unterscheidbaren Testsignalen vormerken. Vor dem Solltakt läuft die Quelle, die Zielposition setzt innerhalb der ±5 ms aus FR-006 ein. Die Gain-Verläufe im Übergang stimmen mit der vorab festgelegten Überblendkurve und Dauer überein. Bei gleich langen Zwei-Deck-Läufen mit und ohne Sprünge gilt weiterhin die 10-ms-Grenze pro Audioblock.
+- Vor der Taktgrenze widerrufen und in einem zweiten Durchlauf den Track wechseln. Es erfolgt jeweils kein verspäteter Sprung. Ohne gültiges Ziel oder Raster ist die Vormerkung gesperrt. Nativer Hörtest auf hörbare Klicks und korrekten Deckbezug folgt separat.
+
+### M08
+
+**Einmaliges Drum-Fill.** FR-007/008 kennen gespeicherte Slice-Muster. Ein taktgebundener Ersatz des letzten Takts mit automatischer Rückkehr zum Grundmuster ist zusätzlich zu spezifizieren. [Captain Beat, Fill-Anleitung](https://mixedinkey.com/captain-plugins/how-to-guide/captain-beat/)
+
+**REQ-M08** In einem laufenden viertaktigen Sampler-Muster muss der DJ ein eintaktiges Fill vormerken und bis zur Ausführung widerrufen können. Liegt der Beginn des vierten Takts noch voraus, ersetzt das Fill diesen Takt. Läuft der vierte Takt bereits, gilt die Vormerkung für Takt vier der nächsten Runde. Danach beginnt das Grundmuster auf dessen erster Zählzeit. Eine erneute Vormerkung für dieselbe Grenze erzeugt nur ein Fill. Ein Stopp löscht die Vormerkung.
+
+**AC-M08** Das Grundmuster besitzt vier unterscheidbare Takte und das Fill eine eigene Triggerfolge.
+
+- In Takt zwei vormerken. Nur in Takt vier erklingt die Fill-Folge. Der komplette nächste Durchlauf entspricht dem gespeicherten Grundmuster, einschließlich seines ursprünglichen vierten Takts.
+- Die Vormerkung in Takt drei zurücknehmen. Der vierte Takt spielt unverändert. Nach Stopp und Neustart bleibt keine Vormerkung aktiv.
+
+### M09
+
+**Pad-Phrase als Entwurf aufnehmen.** FR-009/010 beschreiben zeitgestempelte Aufnahme und Wiedergabe von Slice-Triggern. Ein vorläufiger Take mit Vorhören und ausdrücklicher Übernahme fehlt. Der Umfang ist die Aufnahme musikalischer Ereignisse. [Captain Beat, Magic Record](https://mixedinkey.com/captain-plugins/how-to-guide/captain-beat/)
+
+**REQ-M09** Nur eine ausdrücklich gestartete Aufnahme darf Pad-ID und relative Einsatzzeit der Anschläge in einen neuen Take übernehmen. Der DJ muss den Take beenden, über den Kopfhörer prüfen, einmal in das Zielmuster übernehmen oder verwerfen können. Während der Aufnahme bleibt die bislang gespeicherte Fassung nutzbar. Bei Trennung des Eingabegeräts endet die Aufnahme und die bereits erfassten Ereignisse bleiben als prüfbarer Entwurf verfügbar. Ein fehlender separater Kopfhörerausgang wird gemeldet, bevor der Take vorgehört wird.
+
+**AC-M09** Vier unterscheidbare Anschläge bei 0, 250, 375 und 750 ms bilden die Zeitreferenz.
+
+- Diesen Take aufnehmen, stoppen und verwerfen. Das gespeicherte Muster enthält dieselben Ereignisse wie vorher. Vor Start und nach Stopp gespielte Anschläge erscheinen in keinem Take.
+- Den Versuch wiederholen und übernehmen. Nach Wiederöffnen sind genau die vier neuen Ereignisse mit ihren relativen Positionen innerhalb der ±5 ms aus FR-006 vorhanden. Ein zweiter Übernahmeversuch verdoppelt die Anschläge nicht.
+- Den Controller nach dem zweiten Anschlag trennen. Der Take enthält zwei Ereignisse und wartet auf die Entscheidung des DJs. Ein Wiederverbinden erzeugt keine zusätzlichen Trigger und startet keine Aufnahme.

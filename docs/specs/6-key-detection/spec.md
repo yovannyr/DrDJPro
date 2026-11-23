@@ -175,3 +175,16 @@ As a DJ reviewing analyzed keys, I want confidence scores and manual override op
 - Machine learning-based key detection
 - Chord progression analysis
 - Scale mode detection beyond major/minor (Dorian, Phrygian, etc.)
+
+## Geplante Ergänzung zur Tonartprüfung
+
+### A07
+
+**Referenzpiano in Prepare.** FR-005, FR-012 und FR-016 beschreiben Konfidenz, manuelle Tonart und Speicherung. Der hörbare Vergleich ergänzt diese Anforderungen. Für die getrennte Analyse zeitlicher Verläufe ist [Spec 33](../33-passage-harmony/spec.md) zuständig.
+
+**REQ-A07** In Prepare kann der DJ über Kopfhörer eine gewählte Passage mit einem Referenz-Grundton oder Dur-/Moll-Dreiklang vergleichen. Eine manuelle Bestätigung speichert die gewählte Tonart separat vom Analysewert. Zurücksetzen stellt den Analysewert wieder her. Ohne getrennten Vorhörausgang bleibt die hörbare Vorschau deaktiviert.
+
+**AC-A07** Geplante Abnahme:
+
+1. Ein a-Moll-Beispiel in Schleife mit dem Referenzdreiklang A–C–E vorhören. Im getrennt abgegriffenen Kopfhörersignal ist die Referenz hörbar. Der Master stimmt mit derselben Wiedergabe ohne Referenz überein. Beim Abbruch endet der Referenzton.
+2. Einen abweichenden Analysewert manuell als 8A bestätigen, die Bibliothek neu öffnen und die Bestätigung samt Herkunft prüfen. Nach Zurücksetzen erscheint der ursprüngliche Wert. Ein zweiter Track behält seine Tonart.
