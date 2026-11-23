@@ -5,7 +5,8 @@
 | Rang | Umsetzungsstand | Gemeinsame Abnahme |
 | ---: | --- | --- |
 | 1 · D04 | 85/170-BPM-Vergleich in Prepare umgesetzt. Signal-, Speicher-, UI- und Lasttests unter Windows bestanden. [Prüfbericht und Messwerte](3-bpm-detection/D04_ABNAHME.md) | Kopfhörer, Master und Bedienung am Gerät |
-| 2–35 | Offen | Nach der Umsetzung |
+| 2 · D03 | [Bestätigte Tonart und optionale Energie auf Covern](../cover-artwork.md#confirmed-key-and-energy-on-library-covers). Auswahl, Katalog-Neustart und Prüfsummen der Musikdateien unter Windows geprüft. | Lesbarkeit mit den eigenen Covern und der eigenen Bildschirm-Skalierung |
+| 3–35 | Offen | Nach der Umsetzung |
 
 ## Einstieg mit 85 oder 170 BPM
 

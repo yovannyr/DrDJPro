@@ -1241,6 +1241,23 @@ impl Library {
         self.set_query(self.query.clone());
         Ok(removed)
     }
+    /// Update user-owned musical labels without changing the source or analysis.
+    pub fn set_music_labels(
+        &mut self,
+        id: i32,
+        labels: crate::track_metadata::MusicLabels,
+    ) -> Result<bool, String> {
+        let index = *self
+            .id_indices
+            .get(&id)
+            .ok_or("Select a library track first")?;
+        if self.tracks[index].metadata.music_labels == labels {
+            return Ok(false);
+        }
+        self.tracks[index].metadata.music_labels = labels;
+        self.mark_track_dirty(index);
+        Ok(true)
+    }
     pub fn set_metadata(
         &mut self,
         path: &Path,
@@ -1248,6 +1265,7 @@ impl Library {
     ) {
         if let Some(index) = self.keys.get(&identity(path)) {
             let index = *index;
+            metadata.music_labels = self.tracks[index].metadata.music_labels;
             metadata.retain_imported_tags(&self.tracks[index].metadata);
             if metadata.analysis.is_none() {
                 metadata.analysis = self.tracks[index].metadata.analysis.clone();
@@ -1294,7 +1312,7 @@ impl Library {
         &mut self,
         track_id: i32,
         path: PathBuf,
-        metadata: crate::track_metadata::TrackMetadata,
+        mut metadata: crate::track_metadata::TrackMetadata,
     ) -> Result<bool, String> {
         if !path.is_absolute()
             || !path.is_file()
@@ -1316,6 +1334,7 @@ impl Library {
             return Err("Replacement file already belongs to another library track".into());
         }
         let track = &self.tracks[index];
+        metadata.music_labels = track.metadata.music_labels;
         if track.path == path && track.available && track.metadata == metadata {
             return Ok(false);
         }
@@ -1361,6 +1380,7 @@ impl Library {
             let enriched = available && saved.metadata.needs_refresh(&saved.path);
             let metadata = if enriched {
                 let mut metadata = crate::track_metadata::read(&saved.path);
+                metadata.music_labels = saved.metadata.music_labels;
                 metadata.retain_imported_tags(&saved.metadata);
                 metadata.analysis = saved.metadata.analysis;
                 metadata

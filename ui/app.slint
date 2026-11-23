@@ -2,8 +2,8 @@
 import "layout-fonts/LiberationSans-Regular.ttf";
 import "layout-fonts/LiberationSans-Bold.ttf";
 import "layout-fonts/LiberationMono-Regular.ttf";
-import { DjTheme, LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, TempoComparisonView, LibraryRow, TableColumn, DeckView, SamplerRow, DeckSlotData } from "theme.slint";
-export { LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, TempoComparisonView, LibraryRow, TableColumn, DeckView, SamplerRow, DeckSlotData } from "theme.slint";
+import { DjTheme, LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, TempoComparisonView, CoverLabelEditor, LibraryRow, TableColumn, DeckView, SamplerRow, DeckSlotData } from "theme.slint";
+export { LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, TempoComparisonView, CoverLabelEditor, LibraryRow, TableColumn, DeckView, SamplerRow, DeckSlotData } from "theme.slint";
 export { RemoteDisplayWindow } from "remote-display.slint";
 export { WebBrowserWindow } from "web_view.slint";
 export { ItunesWindow,ItunesRow } from "itunes.slint";
@@ -290,7 +290,7 @@ export component AppWindow inherits Window {
     callback controller-browser-action(int);
     callback controller-cancel-load-gesture();
     in-out property <bool> controller-browser-crates;
-    out property <bool> controller-editor-open: root.crate-editor-open || root.left-grid-editing || root.right-grid-editing || root.left-cue-editing || root.right-cue-editing || left-deck.loop-name-focused || right-deck.loop-name-focused;
+    out property <bool> controller-editor-open: root.crate-editor-open || root.cover-label-editor.open || root.left-grid-editing || root.right-grid-editing || root.left-cue-editing || root.right-cue-editing || left-deck.loop-name-focused || right-deck.loop-name-focused;
     out property <bool> controller-search-focused: track-library.search-focused;
     callback focus-library-tracks();
     focus-library-tracks => { track-library.focus-tracks(); }
@@ -309,6 +309,12 @@ export component AppWindow inherits Window {
     in property <int> table-sort-field;
     in property <bool> table-sort-descending;
     in property <bool> table-columns-enabled: true;
+    in property <bool> cover-overlay-enabled: true;
+    callback toggle-cover-overlay();
+    in-out property <CoverLabelEditor> cover-label-editor;
+    callback open-cover-labels();
+    callback save-cover-labels(int, string, string);
+    callback cancel-cover-labels();
     in-out property <length> table-scroll-x;
     callback change-table-column(int, int);
     pure callback track-transfer(string) -> data-transfer;
@@ -734,6 +740,9 @@ export component AppWindow inherits Window {
     changed tempo-comparison-obsolete => {
         if root.tempo-comparison-obsolete { root.cancel-tempo-comparison(); }
     }
+    private property <bool> cover-editor-obsolete: root.cover-label-editor.open
+        && (!root.prepare-visible || root.cover-label-editor.track-id != root.selected-track);
+    changed cover-editor-obsolete => { if root.cover-editor-obsolete { root.cancel-cover-labels(); } }
     callback analyze-library();
     callback add-phrase-cues();
     callback suggest-track(bool);
@@ -786,6 +795,7 @@ export component AppWindow inherits Window {
         width: 100%; height: 100%;
         capture-key-pressed(event) => {
             if event.text == Key.Escape && root.cancel-library-drag() { return accept; }
+            if root.cover-label-editor.open && event.text == Key.Escape { root.cancel-cover-labels(); return accept; }
             return reject;
         }
         focus-lost(reason) => { root.release-active-hot-cue-key(); }
@@ -795,6 +805,7 @@ export component AppWindow inherits Window {
                 return reject;
             }
             if root.more-open && event.text == Key.Escape { root.more-open = false; more-button.focus(); return accept; }
+            if root.cover-label-editor.open { return reject; }
             if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta && event.modifiers.shift {
                 if event.text == Key.LeftArrow {
                     if !event.repeat { root.load-library-left(); }
@@ -1264,6 +1275,12 @@ Rectangle {
             drop-on-deck(deck, data) => { root.drop-track(deck, data); }
             import-itunes => { root.show-itunes(); }
             columns: root.table-columns; all-columns: root.all-table-columns; table-width: root.table-width;
+            cover-overlay-enabled: root.cover-overlay-enabled;
+            toggle-cover-overlay => { root.toggle-cover-overlay(); }
+            cover-label-editor <=> root.cover-label-editor;
+            open-cover-labels => { root.open-cover-labels(); }
+            save-cover-labels(id, key, energy) => { root.save-cover-labels(id, key, energy); }
+            cancel-cover-labels => { root.cancel-cover-labels(); }
             table-scroll-x <=> root.table-scroll-x;
             sort-field: root.table-sort-field; sort-descending: root.table-sort-descending; columns-enabled: root.table-columns-enabled;
             change-column(id, action) => { root.change-table-column(id, action); }
@@ -1397,6 +1414,11 @@ Rectangle {
                 }
                 Button {text:"REMOTE";accessible-label:"Open generic remote display";clicked=>{root.show-remote-display();}}
                 Rectangle { horizontal-stretch: 1; }
+            }
+            CheckBox {
+                text: "Show key and energy on covers"; accessible-label: "Settings show key and energy on covers";
+                checked: root.cover-overlay-enabled; enabled: root.table-columns-enabled;
+                toggled => { root.toggle-cover-overlay(); }
             }
             for column in root.all-table-columns : CheckBox {
                 text: column.title; accessible-label: "Settings column " + column.sort-label;

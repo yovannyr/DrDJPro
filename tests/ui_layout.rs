@@ -16,6 +16,199 @@ fn click(ui: &AppWindow, label: &str) {
 }
 
 #[test]
+fn cover_labels_show_confirmed_catalog_values_in_both_layouts() {
+    i_slint_backend_testing::init_no_event_loop();
+    let ui = AppWindow::new().unwrap();
+    ui.set_audio_enabled(true);
+    ui.window().set_size(slint::LogicalSize::new(850., 860.));
+    ui.set_table_columns(
+        Rc::new(slint::VecModel::from(vec![TableColumn {
+            id: 11,
+            title: "Cover".into(),
+            width: 36.,
+            visible: true,
+            ..Default::default()
+        }]))
+        .into(),
+    );
+    ui.set_table_width(36.);
+    let image = slint::Image::from_rgb8(slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(8, 4));
+    let rows = [
+        LibraryRow {
+            id: 1,
+            cover: image.clone(),
+            cover_key: "12B".into(),
+            cover_energy: "10".into(),
+            ..Default::default()
+        },
+        LibraryRow {
+            id: 2,
+            cover_key: "8A".into(),
+            ..Default::default()
+        },
+        LibraryRow {
+            id: 3,
+            key: "7B".into(),
+            ..Default::default()
+        },
+    ];
+    ui.set_library_rows(Rc::new(slint::VecModel::from(rows.to_vec())).into());
+    let toggle = ui.as_weak();
+    ui.on_toggle_cover_overlay(move || {
+        let ui = toggle.unwrap();
+        ui.set_cover_overlay_enabled(!ui.get_cover_overlay_enabled());
+    });
+    ui.show().unwrap();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        ui.set_view_mode(mode);
+        for selected in [1, 2] {
+            ui.set_selected_track(selected);
+            let labels = |id| {
+                ElementHandle::find_by_accessible_label(&ui, &format!("Track {id} cover labels"))
+                    .next()
+            };
+            let badge = labels(1).unwrap();
+            let desc = badge.accessible_description().unwrap();
+            assert!(desc.starts_with("Camelot 12B, energy 10"));
+            assert_eq!(desc.ends_with(", selected"), selected == 1);
+            let bounds = |element: &ElementHandle| {
+                let p = element.absolute_position();
+                let size = element.size();
+                assert!(size.width > 0. && size.height > 0., "{size:?}");
+                (p.x, p.y, p.x + size.width, p.y + size.height)
+            };
+            let contains = |outer: (f32, f32, f32, f32), inner: (f32, f32, f32, f32)| {
+                outer.0 <= inner.0 && outer.1 <= inner.1 && inner.2 <= outer.2 && inner.3 <= outer.3
+            };
+            let chips = badge
+                .query_descendants()
+                .match_type_name("CoverBadge")
+                .find_all();
+            assert_eq!(chips.len(), 2);
+            for chip in &chips {
+                let rect = bounds(chip);
+                let caption = chip
+                    .query_descendants()
+                    .match_type_name("Text")
+                    .find_first()
+                    .unwrap();
+                let ink = bounds(&caption);
+                assert!(
+                    contains(bounds(&badge), rect),
+                    "Cover chip outside cell: {rect:?}"
+                );
+                assert!(
+                    contains(rect, ink),
+                    "Caption {ink:?} must fit its chip {rect:?}"
+                );
+            }
+            let (first, second) = (bounds(&chips[0]), bounds(&chips[1]));
+            assert!(
+                first.2 <= second.0
+                    || second.2 <= first.0
+                    || first.3 <= second.1
+                    || second.3 <= first.1,
+                "Overlapping chips: {first:?}, {second:?}"
+            );
+            let second = labels(2).unwrap().accessible_description().unwrap();
+            assert!(second.starts_with("Camelot 8A, energy unknown"));
+            assert_eq!(second.ends_with(", selected"), selected == 2);
+            assert!(labels(3).is_none(), "unconfirmed estimated key");
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, "Track 2 cover placeholder")
+                    .next()
+                    .is_some()
+            );
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, "Track 1 cover placeholder")
+                    .next()
+                    .is_none()
+            );
+        }
+        let picture = || {
+            ElementHandle::find_by_accessible_label(&ui, "Track 1 cover art")
+                .next()
+                .unwrap()
+                .size()
+        };
+        let original = picture();
+        click(&ui, "Configure track columns");
+        let toggle = ElementHandle::find_by_accessible_label(&ui, "Show key and energy on covers")
+            .next()
+            .unwrap();
+        toggle.invoke_accessible_default_action();
+        assert!(!ui.get_cover_overlay_enabled());
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Track 1 cover labels")
+                .next()
+                .is_none()
+        );
+        assert_eq!(picture(), original);
+        assert_eq!(ui.get_selected_track(), 2);
+        toggle.invoke_accessible_default_action();
+        click(&ui, "Close track columns");
+    }
+}
+
+#[test]
+fn cover_label_editor_preserves_typed_values_and_cancels_on_track_change() {
+    i_slint_backend_testing::init_no_event_loop();
+    let ui = AppWindow::new().unwrap();
+    ui.set_audio_enabled(true);
+    ui.set_library_tab(4);
+    ui.set_selected_track(7);
+    ui.show().unwrap();
+    let target = ui.as_weak();
+    ui.on_open_cover_labels(move || {
+        target.unwrap().set_cover_label_editor(CoverLabelEditor {
+            open: true,
+            track_id: 7,
+            key: "8A".into(),
+            ..Default::default()
+        })
+    });
+    click(&ui, "Edit confirmed cover labels");
+    let control = |label| {
+        ElementHandle::find_by_accessible_label(&ui, label)
+            .next()
+            .unwrap()
+    };
+    control("Confirmed Camelot key").set_accessible_value("9B");
+    control("Confirmed energy").set_accessible_value("11");
+    let target = ui.as_weak();
+    ui.on_save_cover_labels(move |id, key, energy| {
+        assert_eq!((id, key.as_str(), energy.as_str()), (7, "9B", "11"));
+        target.unwrap().set_cover_label_editor(CoverLabelEditor {
+            open: true,
+            track_id: id,
+            key,
+            energy,
+            status: "Energy must be 1–10".into(),
+        });
+    });
+    click(&ui, "Save cover labels");
+    assert_eq!(
+        control("Cover label status")
+            .accessible_description()
+            .as_deref(),
+        Some("Energy must be 1–10")
+    );
+    assert_eq!(
+        control("Confirmed energy").accessible_value().as_deref(),
+        Some("11")
+    );
+    let target = ui.as_weak();
+    ui.on_cancel_cover_labels(move || target.unwrap().set_cover_label_editor(Default::default()));
+    ui.set_selected_track(8);
+    assert_eq!(
+        control("Save cover labels").accessible_enabled(),
+        Some(false)
+    );
+    slint::platform::update_timers_and_animations();
+    assert!(!ui.get_cover_label_editor().open);
+}
+
+#[test]
 fn prepare_tempo_comparison_exposes_variants_and_protects_the_grid_in_both_layouts() {
     i_slint_backend_testing::init_no_event_loop();
     for mode in [LayoutMode::Classic, LayoutMode::Modern] {

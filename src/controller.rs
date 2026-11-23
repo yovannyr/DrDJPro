@@ -1,4 +1,5 @@
 //! GUI control plane with injectable file selection and one bounded load worker.
+mod cover_labels;
 mod itunes;
 mod tempo_comparison;
 use crate::{
@@ -199,6 +200,20 @@ impl slint::Model for LibraryRows {
 fn library_row(track: &crate::library::Track) -> crate::LibraryRow {
     let analysis = track.metadata.analysis.as_ref();
     crate::LibraryRow {
+        cover_key: track
+            .metadata
+            .music_labels
+            .key()
+            .map(|key| key.to_string())
+            .unwrap_or_default()
+            .into(),
+        cover_energy: track
+            .metadata
+            .music_labels
+            .energy()
+            .map(|energy| energy.to_string())
+            .unwrap_or_default()
+            .into(),
         cover: Default::default(),
         bpm: analysis
             .filter(|a| a.bpm > 0.)
@@ -1207,29 +1222,19 @@ impl AudioController {
         let weak = Rc::downgrade(&controller);
         ui.on_change_table_column(move |id, action| {
             if let Some(c) = weak.upgrade() {
-                if !c.storage_ready.get() {
-                    if let Some(ui) = c.ui.upgrade() {
-                        ui.set_status(
-                            "Wait for library restoration before changing columns".into(),
-                        );
-                    }
-                    return;
-                }
-                let result = c.table_columns.borrow_mut().change(id, action);
-                match result {
-                    Ok(()) => {
-                        if c.saved_table_columns.borrow().is_none() {
-                            *c.saved_table_columns.borrow_mut() = Some(Default::default());
-                        }
-                        c.publish_table_columns();
-                        c.library_changed();
-                    }
-                    Err(error) => {
-                        if let Some(ui) = c.ui.upgrade() {
-                            ui.set_status(error.into());
-                        }
-                        c.publish_table_columns();
-                    }
+                c.change_table_presentation(|columns| columns.change(id, action));
+                c.publish_table_columns();
+            }
+        });
+        let weak = Rc::downgrade(&controller);
+        ui.on_toggle_cover_overlay(move || {
+            if let Some(c) = weak.upgrade() {
+                c.change_table_presentation(|columns| {
+                    columns.cover_overlay_enabled = !columns.cover_overlay_enabled;
+                    Ok(())
+                });
+                if let Some(ui) = c.ui.upgrade() {
+                    ui.set_cover_overlay_enabled(c.table_columns.borrow().cover_overlay_enabled);
                 }
             }
         });
@@ -1285,6 +1290,7 @@ impl AudioController {
         controller.wire_crates(ui);
         controller.wire_grid_editor(ui);
         controller.wire_tempo_comparison(ui);
+        controller.wire_cover_labels(ui);
         controller.wire_hot_cues(ui);
         controller.wire_loops(ui);
         controller.wire_pitch(ui);
@@ -5318,11 +5324,31 @@ impl AudioController {
                 .is_some_and(|columns| columns != &*current);
         (changed || inflight_changed).then(|| current.clone())
     }
+    fn change_table_presentation(
+        &self,
+        change: impl FnOnce(&mut crate::table_columns::TableColumns) -> Result<(), String>,
+    ) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        if !self.storage_ready.get() {
+            ui.set_status("Wait for library restoration before changing columns".into());
+            return;
+        }
+        if let Err(error) = change(&mut self.table_columns.borrow_mut()) {
+            ui.set_status(error.into());
+            return;
+        }
+        if self.saved_table_columns.borrow().is_none() {
+            *self.saved_table_columns.borrow_mut() = Some(Default::default());
+        }
+        self.library_changed();
+    }
+
     fn publish_table_columns(&self) {
         let Some(ui) = self.ui.upgrade() else {
             return;
         };
         let preferences = self.table_columns.borrow();
+        ui.set_cover_overlay_enabled(preferences.cover_overlay_enabled);
         let mut columns = Vec::new();
         let mut all = Vec::new();
         let mut width = 0.;
@@ -9418,6 +9444,10 @@ mod dvs_tests {
 }
 #[cfg(test)]
 mod tests {
+    mod cover_label_workflow {
+        use super::*;
+        include!("controller/cover_label_tests.rs");
+    }
     mod prepare_tempo_workflow {
         use super::*;
         include!("controller/tempo_comparison_tests.rs");
@@ -18874,6 +18904,16 @@ mod tests {
         assert!(ui.get_table_columns().iter().any(|column| column.id == 7));
         control(&ui, "Show column BPM").invoke_accessible_default_action();
         assert!(!ui.get_table_columns().iter().any(|column| column.id == 7));
+        let order = c.table_columns.borrow().order.clone();
+        let hidden = c.table_columns.borrow().hidden.clone();
+        let scroll = ui.get_table_scroll_x();
+        assert!(ui.get_cover_overlay_enabled());
+        ui.invoke_toggle_cover_overlay();
+        assert!(!ui.get_cover_overlay_enabled());
+        assert_eq!(c.table_columns.borrow().order, order);
+        assert_eq!(c.table_columns.borrow().hidden, hidden);
+        assert_eq!(ui.get_selected_track(), 1);
+        assert_eq!(ui.get_table_scroll_x(), scroll);
         let expected = c.table_columns.borrow().clone();
         control(&ui, "Close track columns").invoke_accessible_default_action();
         c.close_library().unwrap();
@@ -18889,6 +18929,7 @@ mod tests {
         c.restore_library(Ok(db), vec![]);
         finish_storage(&c);
         assert_eq!(*c.table_columns.borrow(), expected);
+        assert!(!ui.get_cover_overlay_enabled());
         assert_eq!(ui.get_table_columns().row_data(0).unwrap().id, 0);
         assert!(!ui.get_table_columns().iter().any(|column| column.id == 7));
         c.close_library().unwrap();

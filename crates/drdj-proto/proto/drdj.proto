@@ -127,6 +127,8 @@ message NativeMetadataMessage {
   required bool scanned = 7;
   optional string error = 8;
   optional bool prefer_imported_tags = 9;
+  optional string confirmed_key = 10;
+  optional uint32 dj_energy = 11;
 }
 message NativeTrackMessage {
   required sint32 id = 1;

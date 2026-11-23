@@ -232,6 +232,7 @@ impl AudioController {
     fn open_comparison(&self) -> Result<(), String> {
         self.close_comparison();
         let ui = self.ui.upgrade().ok_or("Window closed")?;
+        ui.set_cover_label_editor(Default::default());
         let mut cmp = {
             let library = self.library.borrow();
             if ui.get_library_tab() != 4 || ui.get_selected_track() != library.selected_id() {

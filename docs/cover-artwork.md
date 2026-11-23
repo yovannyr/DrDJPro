@@ -10,9 +10,22 @@ and upgraded without losing relative order or hidden columns.
 
 Extraction examines both probe metadata (e.g. ID3 APIC) and format metadata (e.g.
 FLAC PICTURE/MP4 artwork), preferring a decodable front cover, then other pictures.
-Missing, malformed, unsupported or excessive artwork uses the existing background
-or an empty cell. No network artwork search or adjacent folder images are added.
+Missing, malformed, unsupported or excessive artwork uses the existing deck background
+or a musical-note placeholder in the Library.
 C/D remain the existing unsupported/read-only slots without a loaded audio source.
+
+## Confirmed key and energy on Library covers
+
+Select a track in **Library → Prepare**, then open **Cover labels**. Save a Camelot
+key such as `8A` and an optional DJ energy rating from 1 to 10. An estimated key
+can be confirmed here. Clear either field to remove its label. The rating is a
+personal catalog value, independent of loudness or gain.
+
+Classic and Modern show the same labels on artwork or on the placeholder. For
+example, `12B E10` means Camelot 12B and energy 10. The Library column controls
+and Library settings both offer **Show key and energy on covers**. The preference
+survives a restart. Label edits are saved in the local Library and leave the
+source media untouched.
 
 ## Performance and resource bounds
 

@@ -9,6 +9,12 @@ pub struct TableColumns {
     pub version: u8,
     pub order: Vec<i32>,
     pub hidden: Vec<i32>,
+    #[serde(default = "default_cover_overlay_enabled")]
+    pub cover_overlay_enabled: bool,
+}
+
+fn default_cover_overlay_enabled() -> bool {
+    true
 }
 
 impl Default for TableColumns {
@@ -17,6 +23,7 @@ impl Default for TableColumns {
             version: 1,
             order: vec![6, 11, 0, 3, 7, 8, 4, 5, 9, 10, 2, 1],
             hidden: vec![],
+            cover_overlay_enabled: default_cover_overlay_enabled(),
         }
     }
 }
@@ -160,12 +167,12 @@ mod tests {
 
     #[test]
     fn legacy_columns_preserve_custom_order_and_hidden_state() {
-        let old = TableColumns {
-            version: 1,
-            order: vec![0, 6, 3, 1, 2, 4, 5, 7, 8, 9, 10],
-            hidden: vec![3, 7],
-        };
+        let old: TableColumns = serde_json::from_str(
+            r#"{"version":1,"order":[0,6,3,1,2,4,5,7,8,9,10],"hidden":[3,7]}"#,
+        )
+        .unwrap();
         let upgraded = old.clone().upgrade().unwrap();
+        assert!(upgraded.cover_overlay_enabled);
         assert_eq!(
             upgraded
                 .order
@@ -180,5 +187,24 @@ mod tests {
         let mut bad = old;
         bad.order[0] = 99;
         assert!(bad.upgrade().is_err());
+    }
+
+    #[test]
+    fn cover_overlay_defaults_for_existing_twelve_columns_and_roundtrips_when_disabled() {
+        let old = r#"{"version":1,"order":[11,6,3,0,1,2,4,5,7,8,9,10],"hidden":[0,11]}"#;
+        let mut columns = serde_json::from_str::<TableColumns>(old)
+            .unwrap()
+            .upgrade()
+            .unwrap();
+        assert!(columns.cover_overlay_enabled);
+        assert_eq!(columns.order[0], 11);
+        assert_eq!(columns.hidden, [0, 11]);
+        columns.cover_overlay_enabled = false;
+        let raw = serde_json::to_vec(&columns).unwrap();
+        let restored = serde_json::from_slice::<TableColumns>(&raw)
+            .unwrap()
+            .upgrade()
+            .unwrap();
+        assert_eq!(restored, columns);
     }
 }

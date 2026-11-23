@@ -1,6 +1,6 @@
 // Generated with the full local GUI input; input handlers are retained.
 import { Button, Slider, SpinBox, LineEdit, ListView, ComboBox, CheckBox } from "std-widgets.slint";
-import { DjTheme, DeckSlotData, LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, TempoComparisonView, LibraryRow, TableColumn, DeckView, SamplerRow } from "theme.slint";
+import { DjTheme, DeckSlotData, LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, TempoComparisonView, CoverLabelEditor, LibraryRow, TableColumn, DeckView, SamplerRow } from "theme.slint";
 import { LibraryButton } from "controls.slint";
 
 export component CratePanel inherits Rectangle {
@@ -70,6 +70,55 @@ export component CratePanel inherits Rectangle {
             if root.delete-pending : LibraryButton { text: "Confirm delete"; accessible-label: "Confirm crate deletion"; enabled: !root.busy; clicked => { root.confirm-delete(); } }
             LibraryButton { text: "Cancel"; accessible-label: "Cancel crate dialog"; clicked => { root.cancel-dialog(); } }
             Rectangle { vertical-stretch: 1; }
+        }
+    }
+}
+
+component CoverBadge inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    width: caption.preferred-width + 4px; height: 11px;
+    background: root.selected ? #00466a : #131820;
+    caption := Text {
+        text: root.label; color: #fff; font-size: 9px; font-weight: 600;
+        width: self.preferred-width; height: self.preferred-height;
+        x: 2px; y: (parent.height - self.height) / 2;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+}
+
+component CoverThumbnail inherits Rectangle {
+    in property <image> artwork;
+    in property <int> track-id;
+    in property <string> key-label;
+    in property <string> energy;
+    in property <bool> selected;
+    in property <bool> overlay;
+    border-width: root.selected ? 1px : 0px;
+    border-color: #63c8ff;
+    if root.artwork.width == 0 : Text {
+        text: "♪"; color: #c5d4de; font-size: 13px;
+        horizontal-alignment: center; vertical-alignment: top;
+        accessible-role: text; accessible-label: "Track " + root.track-id + " cover placeholder";
+    }
+    Image {
+        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+        source: root.artwork; image-fit: contain;
+        accessible-label: "Track " + root.track-id + " cover art";
+    }
+    if root.overlay && (root.key-label != "" || root.energy != "") : Rectangle {
+        x: 1px; width: parent.width - 2px; height: parent.height;
+        accessible-role: text; accessible-label: "Track " + root.track-id + " cover labels";
+        accessible-description: (root.key-label == "" ? "Key unknown" : "Camelot " + root.key-label)
+            + (root.energy == "" ? ", energy unknown" : ", energy " + root.energy)
+            + (root.selected ? ", selected" : "");
+        if root.key-label != "" : CoverBadge {
+            x: 0px; y: 0px;
+            label: root.key-label; selected: root.selected;
+        }
+        if root.energy != "" : CoverBadge {
+            x: parent.width - self.width; y: parent.height - self.height;
+            label: "E" + root.energy; selected: root.selected;
         }
     }
 }
@@ -162,6 +211,12 @@ export component TrackLibrary inherits Rectangle {
     in property <int> sort-field;
     in property <bool> sort-descending;
     in property <bool> columns-enabled;
+    in property <bool> cover-overlay-enabled;
+    callback toggle-cover-overlay();
+    in-out property <CoverLabelEditor> cover-label-editor;
+    callback open-cover-labels();
+    callback save-cover-labels(int, string, string);
+    callback cancel-cover-labels();
     in-out property <length> table-scroll-x;
     property <bool> columns-open;
     callback change-column(int, int);
@@ -273,9 +328,44 @@ export component TrackLibrary inherits Rectangle {
                     enabled: root.selection > 0;
                     clicked => { root.open-tempo-comparison(); }
                 }
+                if !root.cover-label-editor.open : LibraryButton {
+                    text: "Cover labels"; accessible-label: "Edit confirmed cover labels";
+                    enabled: root.selection > 0;
+                    clicked => { root.open-cover-labels(); }
+                }
                 Text { horizontal-stretch: 1; vertical-alignment: center; text: root.analysis-title; font-size: 11px; color: #eeeeee; overflow: elide; }
             }
             Text { height: 14px; text: root.analysis-summary; accessible-role: text; accessible-label: "Prepare analysis results"; accessible-description: root.analysis-summary; font-size: 11px; color: #cccccc; overflow: elide; }
+            if root.cover-label-editor.open : VerticalLayout {
+                spacing: 2px;
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text { text: "Camelot"; color: #eee; font-size: 11px; vertical-alignment: center; }
+                    LineEdit {
+                        width: 64px; height: 24px; text: root.cover-label-editor.key;
+                        placeholder-text: "e.g. 8A"; accessible-label: "Confirmed Camelot key";
+                        edited => { root.cover-label-editor.key = self.text; }
+                    }
+                    Text { text: "Energy"; color: #eee; font-size: 11px; vertical-alignment: center; }
+                    LineEdit {
+                        width: 60px; height: 24px; text: root.cover-label-editor.energy;
+                        placeholder-text: "1–10"; accessible-label: "Confirmed energy";
+                        accessible-description: "Optional. Leave blank for unknown energy.";
+                        edited => { root.cover-label-editor.energy = self.text; }
+                    }
+                    LibraryButton {
+                        text: "Save"; accessible-label: "Save cover labels";
+                        enabled: root.cover-label-editor.track-id == root.selection;
+                        clicked => { root.save-cover-labels(root.cover-label-editor.track-id, root.cover-label-editor.key, root.cover-label-editor.energy); }
+                    }
+                    LibraryButton { text: "Cancel"; accessible-label: "Cancel cover labels"; clicked => { root.cancel-cover-labels(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                if root.cover-label-editor.status != "" : Text {
+                    text: root.cover-label-editor.status; wrap: word-wrap; color: #ffcf95; font-size: 11px;
+                    accessible-role: text; accessible-label: "Cover label status"; accessible-description: self.text;
+                }
+            }
             if root.tempo-comparison.open : TempoComparisonPanel {
                 comparison: root.tempo-comparison;
                 select-variant(fast) => { root.select-tempo-variant(fast); }
@@ -335,7 +425,12 @@ export component TrackLibrary inherits Rectangle {
                         spacing: 0px;
                         for column in root.columns : Rectangle {
                             width: column.width * 1px; height: 22px;
-                            if column.id == 11 : Image { x:1px; y:1px; width:parent.width - 2px; height:parent.height - 2px; source:row.cover; image-fit:contain; accessible-label:"Track " + row.id + " cover art"; }
+                            if column.id == 11 : CoverThumbnail {
+                                width: parent.width; height: parent.height;
+                                track-id: row.id; artwork: row.cover;
+                                key-label: row.cover-key; energy: row.cover-energy;
+                                selected: root.selection == row.id; overlay: root.cover-overlay-enabled;
+                            }
                         if column.id != 11 : Text {
                             width: parent.width; height: parent.height;
                             text: column.id == 6 ? "" + row.id : column.id == 0 ? row.name : column.id == 3 ? (row.artist == "" ? "—" : row.artist) : column.id == 4 ? (row.album == "" ? "—" : row.album) : column.id == 7 ? row.bpm : column.id == 8 ? row.key : column.id == 9 ? row.gain : column.id == 10 ? (row.available ? row.analysis-status : "Missing") : column.id == 5 ? row.prepare-duration : column.id == 2 ? row.path : (row.available ? row.format : "MISSING");
@@ -399,6 +494,11 @@ export component TrackLibrary inherits Rectangle {
                 HorizontalLayout {
                     Text { text: "Columns · visibility and order"; color: #eeeeee; font-size: 11px; }
                     LibraryButton { text: "Close"; accessible-label: "Close track columns"; clicked => { root.columns-open = false; } }
+                }
+                CheckBox {
+                    text: "Show key and energy on covers"; accessible-label: "Show key and energy on covers";
+                    checked: root.cover-overlay-enabled; enabled: root.columns-enabled;
+                    toggled => { root.toggle-cover-overlay(); }
                 }
                 ListView {
                     accessible-label: "Track column preferences";
