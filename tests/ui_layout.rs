@@ -16,6 +16,177 @@ fn click(ui: &AppWindow, label: &str) {
 }
 
 #[test]
+fn gig_planning_keeps_drafts_scoped_and_manual_loading_available_in_both_layouts() {
+    use slint::platform::{update_timers_and_animations, Key, WindowEvent};
+    use std::cell::RefCell;
+
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_audio_enabled(true);
+        ui.set_left_loaded(true);
+        ui.set_left_playing(true);
+        ui.set_selected_track(17);
+        ui.set_library_tab(4);
+        ui.set_gig_names(
+            Rc::new(slint::VecModel::from(vec![
+                "No active gig".into(),
+                "Gig A".into(),
+                "Gig B".into(),
+            ]))
+            .into(),
+        );
+        let avoid = GigRuleView {
+            track_id: 17,
+            status: "avoid".into(),
+            reason: "Client request".into(),
+            warning: "Gig A: avoid tonight".into(),
+            ..Default::default()
+        };
+        ui.set_gig_selection_index(1);
+        ui.set_gig_rule_view(avoid.clone());
+        let target = ui.as_weak();
+        let gig_a = avoid.clone();
+        ui.on_select_gig(move |index| {
+            let ui = target.unwrap();
+            ui.set_gig_selection_index(index);
+            ui.set_gig_rule_view(if index == 1 {
+                gig_a.clone()
+            } else {
+                GigRuleView {
+                    track_id: 17,
+                    ..Default::default()
+                }
+            });
+        });
+        let created = Rc::new(RefCell::new(String::new()));
+        let observed = created.clone();
+        ui.on_create_gig(move |name| *observed.borrow_mut() = name.to_string());
+        let saves = Rc::new(Cell::new(0));
+        let observed = saves.clone();
+        let target = ui.as_weak();
+        ui.on_save_gig_rule(move |track_id, status, reason| {
+            observed.set(observed.get() + 1);
+            target.unwrap().set_gig_rule_view(GigRuleView {
+                track_id,
+                status,
+                reason,
+                ..Default::default()
+            });
+        });
+        let played = Rc::new(Cell::new(false));
+        let observed = played.clone();
+        ui.on_toggle_left(move || observed.set(true));
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        let find = |label| ElementHandle::find_by_accessible_label(&ui, label).next();
+        let key = |key: Key| {
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: key.into() });
+            ui.window()
+                .dispatch_event(WindowEvent::KeyReleased { text: key.into() });
+            update_timers_and_animations();
+        };
+        let open = || {
+            click(&ui, "Open gig planning");
+            update_timers_and_animations();
+        };
+        let reason = || find("Gig rule reason").unwrap();
+        let summary = || {
+            find("Saved gig rule")
+                .unwrap()
+                .accessible_description()
+                .unwrap()
+        };
+        open();
+        assert_eq!(
+            reason().accessible_value().as_deref(),
+            Some("Client request")
+        );
+        find("New gig name")
+            .unwrap()
+            .set_accessible_value("Festival");
+        click(&ui, "Create gig");
+        assert_eq!(created.borrow().as_str(), "Festival");
+        reason().set_accessible_value("Uncommitted A");
+        key(Key::DownArrow);
+        assert_eq!(ui.get_gig_selection_index(), 2);
+        assert_eq!(reason().accessible_value().as_deref(), Some(""));
+        assert_eq!(
+            find("Save gig rule").unwrap().accessible_enabled(),
+            Some(false)
+        );
+
+        click(&ui, "Mark as Must play");
+        let long = "A long reason that stays readable. ".repeat(12);
+        reason().set_accessible_value(&long);
+        click(&ui, "Save gig rule");
+        update_timers_and_animations();
+        assert_eq!(ui.get_gig_rule_view().reason.as_str(), long);
+        assert_eq!(summary(), "Must play · pending");
+        ui.set_gig_rule_view(GigRuleView {
+            fulfilled: true,
+            ..ui.get_gig_rule_view()
+        });
+        assert_eq!(summary(), "Must play · fulfilled");
+        let transport = if mode == LayoutMode::Classic {
+            "DECK A play/pause"
+        } else {
+            "PAUSE"
+        };
+        let control = find(transport).unwrap();
+        assert!(
+            control.absolute_position().y + control.size().height <= reason().absolute_position().y
+        );
+        click(&ui, transport);
+        assert!(played.get());
+        click(&ui, "Clear gig rule");
+        update_timers_and_animations();
+        assert_eq!(summary(), "No saved rule");
+        click(&ui, "Mark as Request");
+        reason().set_accessible_value("Only for track 17");
+        ui.set_selected_track(18);
+        click(&ui, "Save gig rule");
+        assert_eq!(saves.get(), 2);
+        ui.set_gig_rule_view(GigRuleView {
+            track_id: 18,
+            ..Default::default()
+        });
+        update_timers_and_animations();
+        assert_eq!(reason().accessible_value().as_deref(), Some(""));
+        key(Key::Escape);
+        assert!(find("Gig planning").is_none());
+
+        ui.set_selected_track(17);
+        ui.set_gig_selection_index(1);
+        ui.set_gig_rule_view(avoid.clone());
+        ui.set_library_tab(0);
+        let warning = "Gig warning for selected track";
+        assert_eq!(
+            find(warning).unwrap().accessible_description(),
+            Some(avoid.warning)
+        );
+        assert_eq!(
+            find("Load selected into deck A")
+                .unwrap()
+                .accessible_enabled(),
+            Some(true)
+        );
+        ui.set_selected_track(18);
+        assert!(find(warning).is_none());
+        ui.set_library_tab(4);
+        open();
+        key(Key::UpArrow);
+        assert_eq!(ui.get_gig_selection_index(), 0);
+        assert_eq!(
+            find("Save gig rule").unwrap().accessible_enabled(),
+            Some(false)
+        );
+    }
+}
+
+#[test]
 fn metadata_diagnosis_reads_every_source_and_routes_only_current_octave_matches() {
     use slint::platform::{Key, WindowEvent};
     use std::cell::RefCell;

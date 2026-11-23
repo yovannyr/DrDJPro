@@ -1,4 +1,5 @@
 //! SQLite catalog storage. The worker owns every database/file operation.
+mod gigs;
 mod prepare_grid;
 use crate::library::{self, Catalog, Library, SavedTrack};
 use crate::output_preferences::{OutputRoute, OutputRoutes, MAX_ROUTES_BYTES};
@@ -20,7 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 const APPLICATION_ID: i32 = 0x4452444a;
-const SCHEMA_VERSION: i32 = 20;
+const SCHEMA_VERSION: i32 = 21;
 const DECK_SESSION_QUERY: &str = "SELECT CASE WHEN length(CAST(value AS BLOB))<=256 THEN value ELSE '' END FROM library_meta WHERE key='deck_session_v1'";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -309,6 +310,11 @@ fn inspect(connection: &Connection) -> Result<Option<Catalog>, InspectError> {
         Default::default()
     };
     let catalog = Catalog {
+        gigs: if version >= 21 {
+            gigs::read(connection)?
+        } else {
+            Default::default()
+        },
         prep_queue: if version >= 17 {
             read_prep_queue(connection)?
         } else {
@@ -961,7 +967,8 @@ fn write_tracks(connection: &Connection, catalog: &Catalog) -> Result<(), String
     write_hot_cues(connection, catalog)?;
     write_saved_loops(connection, catalog)?;
     write_history(connection, catalog)?;
-    write_prep_queue(connection, &catalog.prep_queue)
+    write_prep_queue(connection, &catalog.prep_queue)?;
+    gigs::write_full(connection, &catalog.gigs)
 }
 const UPSERT_TRACK_METADATA: &str = "INSERT INTO track_metadata
     (track_id,title,artist,album,duration_ms,scanned,error,duration_exact,prefer_imported_tags,confirmed_key,dj_energy)
@@ -1072,6 +1079,7 @@ fn initialize(connection: &mut Connection, catalog: &Catalog, source: &str) -> R
     create_saved_loop_schema(&transaction)?;
     create_history_schema(&transaction)?;
     create_prep_schema(&transaction)?;
+    gigs::schema(&transaction)?;
     transaction
         .pragma_update(None, "application_id", APPLICATION_ID)
         .map_err(|e| e.to_string())?;
@@ -1334,6 +1342,9 @@ impl Store {
             if version < 19 {
                 add_grid_lock(&tx)?;
             }
+            if version < 21 {
+                gigs::schema(&tx)?;
+            }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
@@ -1559,7 +1570,8 @@ impl Store {
                 serde_json::to_string(&p).map_err(|e| e.to_string())
             })
             .transpose()?;
-        if delta.tracks.is_empty()
+        if delta.gigs.is_empty()
+            && delta.tracks.is_empty()
             && delta.prep_queue.is_none()
             && delta.crates.is_none()
             && delta.memberships.is_empty()
@@ -1573,6 +1585,7 @@ impl Store {
             return self.checkpoint(true);
         }
         Catalog {
+            gigs: Default::default(),
             prep_queue: Vec::new(),
             version: 1,
             tracks: delta.tracks.clone(),
@@ -1830,6 +1843,7 @@ impl Store {
         if history_count > library::MAX_HISTORY as i64 {
             return Err("Playback history limit exceeded".into());
         }
+        gigs::save_delta(&tx, &delta.gigs)?;
         if let Some(ids) = &delta.prep_queue {
             write_prep_queue(&tx, ids)?;
         }
@@ -2082,6 +2096,7 @@ impl Worker {
                                 || columns.is_some()
                             {
                                 let delta = delta.unwrap_or(crate::library::CatalogDelta {
+                                    gigs:Default::default(),
                                     prep_queue: None,
                                     revision: 0,
                                     tracks: vec![],
@@ -2552,6 +2567,7 @@ mod tests {
             .unwrap();
         assert!(store.read_sampler().is_err());
         let empty = crate::library::CatalogDelta {
+            gigs: Default::default(),
             prep_queue: None,
             revision: 0,
             tracks: vec![],
@@ -2594,6 +2610,7 @@ mod tests {
         fx.extra[0][0].delay.enabled = true;
         fx.preset_chain[7] = Some(fx.chain(0));
         let empty = crate::library::CatalogDelta {
+            gigs: Default::default(),
             prep_queue: None,
             revision: 0,
             tracks: vec![],
@@ -2636,6 +2653,7 @@ mod tests {
             .unwrap();
         assert!(store.read_fx_preferences().is_err());
         let empty = crate::library::CatalogDelta {
+            gigs: Default::default(),
             prep_queue: None,
             revision: 0,
             tracks: vec![],
@@ -2711,6 +2729,7 @@ mod tests {
         let db = dir.path().join("library.sqlite3");
         let (mut store, _, _) = Store::open(db.clone()).unwrap();
         let delta = library::CatalogDelta {
+            gigs: Default::default(),
             prep_queue: None,
             revision: 1,
             tracks: vec![],
@@ -2764,6 +2783,7 @@ mod tests {
         let db = dir.path().join("library.sqlite3");
         let (mut store, _, _) = Store::open(db.clone()).unwrap();
         let delta = library::CatalogDelta {
+            gigs: Default::default(),
             prep_queue: None,
             revision: 1,
             tracks: vec![],
@@ -2837,6 +2857,7 @@ mod tests {
             monitor: None,
         };
         let delta = library::CatalogDelta {
+            gigs: Default::default(),
             prep_queue: None,
             revision: 1,
             tracks: catalog(dir.path().join("missing.wav"), 27).tracks,
@@ -2871,6 +2892,7 @@ mod tests {
             monitor: None,
         };
         let empty = library::CatalogDelta {
+            gigs: Default::default(),
             prep_queue: None,
             revision: 2,
             tracks: vec![],
@@ -2952,6 +2974,7 @@ mod tests {
         prefs.decks[1].step = 5;
         let data = catalog(dir.path().join("missing.wav"), 27);
         let delta = library::CatalogDelta {
+            gigs: Default::default(),
             prep_queue: None,
             revision: 1,
             tracks: data.tracks,
@@ -3046,6 +3069,7 @@ mod tests {
     }
     fn catalog(path: PathBuf, id: i32) -> Catalog {
         Catalog {
+            gigs: Default::default(),
             prep_queue: Vec::new(),
             version: 1,
             crates: Default::default(),
@@ -3587,6 +3611,7 @@ mod tests {
             decks: [Some(1), Some(2)],
         };
         let empty = library::CatalogDelta {
+            gigs: Default::default(),
             prep_queue: None,
             revision: library.revision(),
             tracks: vec![],
@@ -3719,6 +3744,7 @@ mod tests {
             .unwrap();
         collision.path = second_replacement_path.clone();
         let conflicting_delta = library::CatalogDelta {
+            gigs: Default::default(),
             prep_queue: None,
             revision: 1,
             tracks: vec![collision],
@@ -3806,6 +3832,7 @@ mod tests {
         };
         data.tracks[0].metadata.analysis = Some(analysis.clone());
         let delta = crate::library::CatalogDelta {
+            gigs: Default::default(),
             prep_queue: None,
             tracks: data.tracks.clone(),
             revision: 1,
@@ -3821,6 +3848,7 @@ mod tests {
             Some(analysis)
         );
         let mut bad = crate::library::CatalogDelta {
+            gigs: Default::default(),
             prep_queue: None,
             tracks: delta.tracks.clone(),
             revision: 2,
@@ -3968,6 +3996,7 @@ mod tests {
         let data = catalog(dir.path().join("checkpoint-marker.wav"), 1);
         store
             .save_delta(&library::CatalogDelta {
+                gigs: Default::default(),
                 prep_queue: None,
                 revision: 1,
                 tracks: data.tracks,
@@ -3986,6 +4015,7 @@ mod tests {
         fs::remove_dir(&backup).unwrap();
         store
             .save_delta(&library::CatalogDelta {
+                gigs: Default::default(),
                 prep_queue: None,
                 revision: 1,
                 tracks: Vec::new(),
@@ -4010,6 +4040,7 @@ mod tests {
         let data = catalog(dir.path().join("checkpoint-marker.wav"), 1);
         worker
             .save_delta(library::CatalogDelta {
+                gigs: Default::default(),
                 prep_queue: None,
                 revision: 1,
                 tracks: data.tracks,
@@ -4067,6 +4098,7 @@ mod tests {
                 .set(0, Some(cue(1, "First".into())))
                 .unwrap();
             let mut delta = library::CatalogDelta {
+                gigs: Default::default(),
                 prep_queue: None,
                 revision: 1,
                 tracks: vec![target],
@@ -5027,6 +5059,7 @@ mod tests {
         assert_eq!(restored.crates.entries[0].tracks, HashSet::from([1]));
         for (id, track, present) in [(crate_id, 999, true), (999, 1, false), (0, 1, true)] {
             let bad = library::CatalogDelta {
+                gigs: Default::default(),
                 prep_queue: None,
                 revision: 0,
                 tracks: Vec::new(),

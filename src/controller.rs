@@ -1,5 +1,6 @@
 //! GUI control plane with injectable file selection and one bounded load worker.
 mod cover_labels;
+mod gigs;
 mod import_review;
 mod itunes;
 mod metadata_diagnosis;
@@ -380,6 +381,8 @@ pub struct AudioController {
     hardware_meter_clock: RefCell<crate::render_bus::ClockObserver>,
     persistence: RefCell<Option<crate::library_store::Worker>>,
     assistant_library: RefCell<Option<PathBuf>>,
+    suggestion_cancel: RefCell<Option<crate::cancellation::Cancellation>>,
+    gig_ids: RefCell<Vec<Option<i32>>>,
     storage_ready: Cell<bool>,
     dirty: Cell<bool>,
     saving: Cell<bool>,
@@ -577,6 +580,8 @@ impl AudioController {
             hardware_meter_clock: RefCell::new(Default::default()),
             persistence: RefCell::new(None),
             assistant_library: RefCell::default(),
+            suggestion_cancel: RefCell::default(),
+            gig_ids: RefCell::default(),
             storage_ready: Cell::new(true),
             dirty: Cell::new(false),
             saving: Cell::new(false),
@@ -1297,6 +1302,8 @@ impl AudioController {
         });
         controller.apply_levels();
         controller.wire_crates(ui);
+        controller.wire_gigs(ui);
+        controller.publish_gigs(ui, "");
         controller.wire_grid_editor(ui);
         controller.wire_tempo_comparison(ui);
         controller.wire_metadata_diagnosis(ui);
@@ -1422,20 +1429,31 @@ impl AudioController {
                 return;
             }
             let id = ui.get_selected_track();
-            if id <= 0 {
+            if id <= 0 || c.library.borrow().selected_id() != id {
                 return;
             }
+            if c.persistence.borrow().is_none() || c.save_failed.get() {
+                ui.set_status("Library unavailable for suggestions. Check library storage and retry the save.".into());
+                return;
+            }
+            if c.library.borrow().has_changes() || c.saving.get() {
+                c.save_library();
+                ui.set_status("Wait for the library save, then request a suggestion.".into());
+                return;
+            }
+            let cancel = crate::cancellation::Cancellation::default();
+            *c.suggestion_cancel.borrow_mut() = Some(cancel.clone());
             ui.set_assistant_running(true);
             ui.set_status("Searching saved library…".into());
             let view = ui.as_weak();
             let spawned = std::thread::Builder::new()
                 .name("library-suggestion".into())
                 .spawn(move || {
-                    let message = crate::assistant_ui::suggest(&script, &db, id, transition)
+                    let message = crate::assistant_ui::suggest(&script, &db, id, transition, &cancel)
                         .unwrap_or_else(|e| e);
                     let _ = view.upgrade_in_event_loop(move |ui| {
                         ui.set_assistant_running(false);
-                        if ui.get_selected_track() == id {
+                        if !cancel.is_cancelled() && ui.get_selected_track() == id {
                             ui.set_status(message.into());
                         }
                     });
@@ -4993,6 +5011,7 @@ impl AudioController {
     }
     pub fn restore_library(&self, path: Result<PathBuf, String>, initial_paths: Vec<PathBuf>) {
         self.close_metadata_diagnosis();
+        self.invalidate_suggestion();
         self.fx_writable.set(false);
         if let Some(ui) = self.ui.upgrade() {
             ui.set_fx_status("FX session only".into());
@@ -5030,7 +5049,11 @@ impl AudioController {
         self.save_failed.set(false);
     }
     fn record_history(&self, id: DeckId) {
-        let Some(path) = self.engine.borrow().snapshot(id).path else {
+        let snapshot = self.engine.borrow().snapshot(id);
+        if !snapshot.playing {
+            return;
+        }
+        let Some(path) = snapshot.path else {
             return;
         };
         let played_at_ms = match std::time::SystemTime::now()
@@ -5047,6 +5070,7 @@ impl AudioController {
             }
         };
         let deck = u8::from(id == DeckId::B);
+        let previous_gig_revision = self.library.borrow().gig_revision();
         let result = self
             .library
             .borrow_mut()
@@ -5054,6 +5078,13 @@ impl AudioController {
         match result {
             Ok(true) => {
                 self.library_changed();
+                if self.library.borrow().gig_revision() != previous_gig_revision {
+                    self.invalidate_suggestion();
+                    if let Some(ui) = self.ui.upgrade() {
+                        self.publish_gig_rule(&ui, ui.get_selected_track(), "");
+                        ui.set_status("Required track played for this gig".into());
+                    }
+                }
                 if self.library.borrow().active_crate() == crate::library::HISTORY_SCOPE {
                     self.publish_library();
                 }
@@ -5502,6 +5533,9 @@ impl AudioController {
                                 .expect("Library generation overflow"),
                         );
                         *self.library.borrow_mut() = library;
+                        if let Some(ui) = self.ui.upgrade() {
+                            self.publish_gigs(&ui, "");
+                        }
                         self.publish_library();
                         for id in [DeckId::A, DeckId::B] {
                             if let Err(error) = self.apply_saved_grid(id) {
@@ -5755,6 +5789,7 @@ impl AudioController {
         }
     }
     pub fn close_library(&self) -> Result<(), String> {
+        self.invalidate_suggestion();
         self.close_metadata_diagnosis();
         if self.import_review.borrow().is_some() {
             self.close_import_review();
@@ -7964,7 +7999,12 @@ impl AudioController {
     }
     fn publish_track_selection(&self, ui: &AppWindow, selected: i32) {
         // Invalidate immediately even if selection returns to the original row before the next tick.
-        if ui.get_selected_track() != selected || ui.get_library_tab() != 4 {
+        let changed = ui.get_selected_track() != selected;
+        if changed {
+            self.invalidate_suggestion();
+            self.publish_gig_rule(ui, selected, "");
+        }
+        if changed || ui.get_library_tab() != 4 {
             self.close_metadata_diagnosis();
         }
         ui.set_selected_track(selected);
@@ -9465,6 +9505,10 @@ mod dvs_tests {
 }
 #[cfg(test)]
 mod tests {
+    mod gig_workflow {
+        use super::*;
+        include!("controller/gig_tests.rs");
+    }
     mod metadata_diagnosis_workflow {
         use super::*;
         include!("controller/metadata_diagnosis_tests.rs");
@@ -18606,6 +18650,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let legacy = dir.path().join("library.json");
         let catalog = crate::library::Catalog {
+            gigs: Default::default(),
             prep_queue: Vec::new(),
             version: 1,
             crates: Default::default(),
@@ -20605,6 +20650,7 @@ mod tests {
         let db = profile.path().join("library.sqlite3");
         let file = crate::test_support::tagged_wav("Retained title", "Artist", "Album");
         let seed = crate::library::Catalog {
+            gigs: Default::default(),
             prep_queue: Vec::new(),
             version: 1,
             crates: Default::default(),
@@ -21231,6 +21277,7 @@ mod tests {
         );
         let old_path = missing_dir.path().join("missing-track.wav");
         *c.library.borrow_mut() = crate::library::Library::restore(crate::library::Catalog {
+            gigs: Default::default(),
             prep_queue: Vec::new(),
             version: 1,
             tracks: vec![crate::library::SavedTrack {
@@ -21294,6 +21341,7 @@ mod tests {
             })
             .collect();
         *c.library.borrow_mut() = crate::library::Library::restore(crate::library::Catalog {
+            gigs: Default::default(),
             prep_queue: Vec::new(),
             version: 1,
             tracks,

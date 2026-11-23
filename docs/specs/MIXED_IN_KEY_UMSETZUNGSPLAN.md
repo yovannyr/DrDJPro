@@ -8,7 +8,8 @@
 | 2 · D03 | [Bestätigte Tonart und optionale Energie auf Covern](../cover-artwork.md#confirmed-key-and-energy-on-library-covers). Auswahl, Katalog-Neustart und Prüfsummen der Musikdateien unter Windows geprüft. | Lesbarkeit mit den eigenen Covern und der eigenen Bildschirm-Skalierung |
 | 3 · R04 | [Dateikopien und mögliche Edits vor dem Import prüfen](13-library-management/R04_ABNAHME.md). Zwei laufende Decks hielten in beiden Messläufen alle 3.000 Audiofristen ein. | Eigene Varianten in Classic und Modern auswählen und beide Decks bedienen |
 | 4 · R05 | [BPM und Tonart aus Dateitag, Analyse und Katalog vergleichen](13-library-management/R05_ABNAHME.md). Schreibschutz, Dateiformate, Auswahlwechsel und Audiolast unter Windows geprüft. | Diagnose und Hörvergleich mit eigenen widersprüchlich getaggten Titeln |
-| 5–35 | Offen | Nach der Umsetzung |
+| 5 · R02 | [Wünsche, Pflichttracks und Ausschlüsse pro Auftritt](24-smart-playlist-manager/R02_ABNAHME.md). Neustart, Vorschläge, bestätigte Wiedergabe und Audiolast geprüft. | Zwei eigene Auftritte am Controller vergleichen |
+| 6–35 | Offen | Nach der Umsetzung |
 
 ## Einstieg mit 85 oder 170 BPM
 

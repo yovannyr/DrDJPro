@@ -1,4 +1,5 @@
 //! Session library state. File inspection runs on the control worker, not the UI/audio thread.
+pub(crate) mod gigs;
 pub(crate) mod import_review;
 pub mod protobuf;
 use std::{
@@ -17,6 +18,8 @@ pub const MAX_PREP: usize = 5_000;
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Catalog {
+    #[serde(skip)]
+    pub gigs: gigs::GigBook,
     pub version: u32,
     pub tracks: Vec<SavedTrack>,
     #[serde(skip)]
@@ -48,6 +51,7 @@ pub struct SavedTrack {
     pub saved_loops: crate::saved_loops::SavedLoops,
 }
 pub struct CatalogDelta {
+    pub gigs: gigs::GigDelta,
     pub prep_queue: Option<Vec<i32>>,
     pub revision: u64,
     pub tracks: Vec<SavedTrack>,
@@ -100,6 +104,7 @@ impl Catalog {
                 return Err("Invalid playback history entry".into());
             }
         }
+        self.gigs.validate(&ids)?;
         self.crates.validate(&ids)
     }
 }
@@ -728,6 +733,8 @@ impl Track {
 }
 #[derive(Default)]
 pub struct Library {
+    gig_book: gigs::GigBook,
+    gig_dirty: gigs::GigChanges,
     prep_queue: Vec<i32>,
     prep_members: HashSet<i32>,
     changed_prep: Option<u64>,
@@ -882,13 +889,15 @@ impl Library {
         self.revision
     }
     pub fn has_changes(&self) -> bool {
-        self.changed_prep.is_some()
+        self.gig_dirty.has_changes()
+            || self.changed_prep.is_some()
             || !self.changed_tracks.is_empty()
             || !self.changed_crates.is_empty()
             || !self.changed_memberships.is_empty()
             || !self.changed_history.is_empty()
     }
     pub fn acknowledge(&mut self, revision: u64) {
+        self.gig_dirty.acknowledge(revision);
         if self.changed_prep.is_some_and(|changed| changed <= revision) {
             self.changed_prep = None;
         }
@@ -901,6 +910,7 @@ impl Library {
     }
     pub fn changes(&self) -> CatalogDelta {
         CatalogDelta {
+            gigs: self.gig_dirty.delta(&self.gig_book),
             prep_queue: self.changed_prep.map(|_| self.prep_queue.clone()),
             revision: self.revision,
             tracks: self
@@ -974,6 +984,7 @@ impl Library {
         };
         self.history.insert(track_id, entry.clone());
         self.mark_history(track_id, Some(entry));
+        self.fulfill_gig(track_id, played_at_ms);
         if self.history.len() > MAX_HISTORY {
             let oldest = self
                 .history
@@ -1472,6 +1483,7 @@ impl Library {
         catalog.validate()?;
         let history = catalog.history;
         let mut library = Self {
+            gig_book: catalog.gigs,
             prep_members: catalog.prep_queue.iter().copied().collect(),
             prep_queue: catalog.prep_queue,
             crates: catalog.crates,
@@ -1534,6 +1546,7 @@ impl Library {
         let mut history: Vec<_> = self.history.values().cloned().collect();
         history.sort_by_key(|entry| (std::cmp::Reverse(entry.last_played_ms), entry.track_id));
         Catalog {
+            gigs: self.gig_book.clone(),
             prep_queue: self.prep_queue.clone(),
             version: 1,
             crates: self.crates.clone(),
@@ -2418,6 +2431,7 @@ mod tests {
         let existing_path = existing.path().to_owned();
         let replacement_path = std::fs::canonicalize(replacement.path()).unwrap();
         let catalog = Catalog {
+            gigs: Default::default(),
             prep_queue: Vec::new(),
             version: 1,
             tracks: vec![
@@ -2646,6 +2660,7 @@ mod tests {
         let missing2 = dir.path().join("missing2.wav");
 
         let catalog = Catalog {
+            gigs: Default::default(),
             prep_queue: Vec::new(),
             version: 1,
             tracks: vec![

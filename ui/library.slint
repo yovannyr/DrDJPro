@@ -4,6 +4,7 @@ import { DjTheme, DeckSlotData, LoopRange, SavedLoopRow, HotCueRow, CrateRow, Be
 import { LibraryButton } from "controls.slint";
 import { ImportReviewRow, ImportReviewPanel } from "import-review.slint";
 import { MetadataDiagnosisView, MetadataDiagnosisPanel } from "metadata-diagnosis.slint";
+import { GigRuleView, GigPlanningPanel } from "gig-planning.slint";
 
 export component CratePanel inherits Rectangle {
     in property <bool> managing;
@@ -242,6 +243,16 @@ export component TrackLibrary inherits Rectangle {
         && !root.tempo-comparison.open && !root.cover-label-editor.open && root.metadata-diagnosis.open
         && root.metadata-diagnosis.track-id == root.selection;
     out property <bool> diagnosis-text-focused: root.diagnosis-visible && diagnosis-panel.text-focused;
+    in-out property <bool> gig-planning-open;
+    in property <[string]> gig-names;
+    in property <int> gig-selection-index;
+    in property <GigRuleView> gig-rule-view;
+    callback create-gig(string);
+    callback select-gig(int);
+    callback save-gig-rule(int, string, string);
+    private property <bool> gig-visible: root.gig-planning-open && root.tab == 4 && !root.import-review-open
+        && !root.tempo-comparison.open && !root.cover-label-editor.open && !root.metadata-diagnosis.open;
+    out property <bool> gig-text-focused: root.gig-visible && gig-panel.text-focused;
     callback select-tempo-variant(bool);
     callback apply-tempo-comparison();
     callback cancel-tempo-comparison();
@@ -335,7 +346,7 @@ export component TrackLibrary inherits Rectangle {
             text: "Crates: select on the left; + / + Sub / + Smart create groups. Add / Remove manage the selected track.";
             color: #bbbbbb; font-size: 11px; wrap: word-wrap;
         }
-        if tab == 4 && !root.diagnosis-visible : VerticalLayout {
+        if tab == 4 && !root.diagnosis-visible && !root.gig-visible : VerticalLayout {
             spacing: 2px;
             if root.analysis-progress != "" : Text { height: 14px; text: root.analysis-progress; accessible-role: text; accessible-label: "Library analysis progress"; accessible-description: root.analysis-progress; font-size: 11px; color: #cccccc; overflow: elide; }
             HorizontalLayout {
@@ -357,6 +368,10 @@ export component TrackLibrary inherits Rectangle {
                     text: "BPM / key info"; accessible-label: "Open metadata diagnosis";
                     enabled: root.selection > 0;
                     clicked => { root.open-metadata-diagnosis(); }
+                }
+                if !root.tempo-comparison.open && !root.cover-label-editor.open : LibraryButton {
+                    text: "Gig plan"; accessible-label: "Open gig planning";
+                    clicked => { root.gig-planning-open = true; }
                 }
                 Text { horizontal-stretch: 1; vertical-alignment: center; text: root.analysis-title; font-size: 11px; color: #eeeeee; overflow: elide; }
             }
@@ -408,6 +423,17 @@ export component TrackLibrary inherits Rectangle {
                     background: #209ac4;
                 }
             }
+        }
+        gig-panel := GigPlanningPanel {
+            visible: root.gig-visible;
+            min-height: self.visible ? 112px : 0px; preferred-height: self.visible ? 123px : 0px;
+            max-height: self.visible ? 135px : 0px;
+            names: root.gig-names; selection-index: root.gig-selection-index;
+            selected-track: root.selection; rule: root.gig-rule-view;
+            close => { root.gig-planning-open = false; root.focus-tracks(); }
+            create-gig(name) => { root.create-gig(name); }
+            select-gig(index) => { root.select-gig(index); }
+            save-rule(id, status, reason) => { root.save-gig-rule(id, status, reason); }
         }
         diagnosis-panel := MetadataDiagnosisPanel {
             visible: root.diagnosis-visible;
@@ -510,6 +536,12 @@ export component TrackLibrary inherits Rectangle {
             Text { text: empty-text; visible: rows.length == 0; color: #9faec2; horizontal-alignment: center; vertical-alignment: center; }
         }
           }
+        }
+        if !root.gig-visible && root.gig-selection-index > 0 && root.selection > 0
+            && root.gig-rule-view.track-id == root.selection && root.gig-rule-view.status == "avoid"
+            && root.gig-rule-view.warning != "" : Text {
+            text: root.gig-rule-view.warning; accessible-role: text; accessible-label: "Gig warning for selected track";
+            accessible-description: self.text; color: #ffd379; font-size: 12px; height: 17px; overflow: elide;
         }
         HorizontalLayout {
             LibraryButton { text: "Columns"; accessible-label: "Configure track columns"; clicked => { root.columns-open = !root.columns-open; } }

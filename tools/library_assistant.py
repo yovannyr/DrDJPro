@@ -139,7 +139,17 @@ def compatible(a, b):
     )
 
 
-def recommend(db, track_id, limit, gram=None, transition=False):
+def active_gig_filter(db):
+    """Apply performance rules in the same read snapshot as the candidate ranking."""
+    if db.execute("PRAGMA user_version").fetchone()[0] < 21:
+        return ""
+    return """ AND NOT EXISTS (
+        SELECT 1 FROM gig_selection s JOIN gig_rules r ON r.gig_id=s.active_gig_id
+        WHERE s.singleton=1 AND r.track_id=t.id AND r.status='avoid'
+    )"""
+
+
+def recommend(db, track_id, limit, gram=None, transition=False, *, respect_active_gig=True):
     limit_rows(limit)
     source = measured(get_row(db, track_id))
     source_features = descriptors(source)
@@ -167,9 +177,11 @@ def recommend(db, track_id, limit, gram=None, transition=False):
     def similarity(features):
         return cosine(source_features, features, gram)
 
+    excluded = active_gig_filter(db) if respect_active_gig else ""
+
     def ranked():
         for row in db.execute(
-            SELECT + "WHERE t.id<>? AND (a.result IS NOT NULL OR g.bpm IS NOT NULL)",
+            SELECT + "WHERE t.id<>? AND (a.result IS NOT NULL OR g.bpm IS NOT NULL)" + excluded,
             (track_id,),
         ):
             candidate = measured(row)
@@ -274,7 +286,10 @@ def compare_history(db, gram, limit):
         counts["scored_pairs"] += 1
         for name, dictionary in (("tempo_hits", None), ("descriptor_hits", gram)):
             counts[name] += int(
-                any(r["id"] == b[0] for r in recommend(db, a[0], limit, dictionary))
+                any(
+                    r["id"] == b[0]
+                    for r in recommend(db, a[0], limit, dictionary, respect_active_gig=False)
+                )
             )
     return counts
 
