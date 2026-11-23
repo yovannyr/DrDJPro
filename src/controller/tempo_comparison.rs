@@ -21,23 +21,41 @@ pub(super) struct Comparison {
 
 // Keep an abandoned read in this slot until it actually exits. Repeated selection
 // changes can replace the draft, but never create a second concurrent decoder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PreviewOwner {
+    Tempo,
+    Piano,
+}
+
 pub(super) struct PreviewJob {
+    owner: PreviewOwner,
+    epoch: u64,
     cancel: Cancellation,
     result: Receiver<Result<PreviewClip, String>>,
 }
 
 impl PreviewJob {
-    fn start(path: PathBuf, start: Duration) -> Result<Self, String> {
+    pub(super) fn start(
+        path: PathBuf,
+        start: Duration,
+        owner: PreviewOwner,
+        epoch: u64,
+    ) -> Result<Self, String> {
         let cancel = Cancellation::default();
         let worker = cancel.clone();
         let (tx, result) = mpsc::sync_channel(1);
         std::thread::Builder::new()
-            .name("tempo-preview".into())
+            .name("prepare-preview".into())
             .spawn(move || {
                 let _ = tx.send(PreviewClip::open(&path, start, &worker));
             })
             .map_err(|error| error.to_string())?;
-        Ok(Self { cancel, result })
+        Ok(Self {
+            owner,
+            epoch,
+            cancel,
+            result,
+        })
     }
 }
 
@@ -232,7 +250,7 @@ impl AudioController {
     fn open_comparison(&self) -> Result<(), String> {
         self.close_comparison();
         let ui = self.ui.upgrade().ok_or("Window closed")?;
-        ui.set_cover_label_editor(Default::default());
+        self.close_reference_editor();
         let mut cmp = {
             let library = self.library.borrow();
             if ui.get_library_tab() != 4 || ui.get_selected_track() != library.selected_id() {
@@ -251,9 +269,7 @@ impl AudioController {
     }
 
     pub(super) fn close_comparison(&self) {
-        if let Some(job) = self.preview_job.borrow().as_ref() {
-            job.cancel.request();
-        }
+        self.cancel_preview_job(PreviewOwner::Tempo);
         if self.comparison.borrow_mut().take().is_some() {
             self.engine.borrow().stop_tempo_preview();
             if let Some(ui) = self.ui.upgrade() {
@@ -287,21 +303,43 @@ impl AudioController {
         Ok(())
     }
 
-    pub(super) fn poll_tempo_comparison(&self) {
+    pub(super) fn cancel_preview_job(&self, owner: PreviewOwner) {
+        if let Some(job) = self
+            .preview_job
+            .borrow()
+            .as_ref()
+            .filter(|job| job.owner == owner)
+        {
+            job.cancel.request();
+        }
+    }
+
+    pub(super) fn take_preview_result(
+        &self,
+        owner: PreviewOwner,
+    ) -> Option<(u64, bool, Result<PreviewClip, String>)> {
         let finished = {
             let job = self.preview_job.borrow();
-            job.as_ref().and_then(|job| match job.result.try_recv() {
-                Ok(result) => Some((job.cancel.is_cancelled(), result)),
-                Err(TryRecvError::Disconnected) => Some((
-                    job.cancel.is_cancelled(),
-                    Err("Preview worker stopped".into()),
-                )),
-                Err(TryRecvError::Empty) => None,
-            })
+            job.as_ref()
+                .filter(|job| job.owner == owner)
+                .and_then(|job| match job.result.try_recv() {
+                    Ok(result) => Some((job.epoch, job.cancel.is_cancelled(), result)),
+                    Err(TryRecvError::Disconnected) => Some((
+                        job.epoch,
+                        job.cancel.is_cancelled(),
+                        Err("Preview worker stopped".into()),
+                    )),
+                    Err(TryRecvError::Empty) => None,
+                })
         };
         if finished.is_some() {
             self.preview_job.borrow_mut().take();
         }
+        finished
+    }
+
+    pub(super) fn poll_tempo_comparison(&self) {
+        let finished = self.take_preview_result(PreviewOwner::Tempo);
         if self.comparison.borrow().is_none() || self.ensure_comparison_current().is_err() {
             return;
         }
@@ -315,13 +353,11 @@ impl AudioController {
                 cmp.route = route;
                 cmp.wants_audio = false;
                 cmp.notice.clear();
-                if let Some(job) = self.preview_job.borrow().as_ref() {
-                    job.cancel.request();
-                }
+                self.cancel_preview_job(PreviewOwner::Tempo);
                 engine.stop_tempo_preview();
                 changed = true;
             }
-            if let Some((false, result)) = finished {
+            if let Some((_, false, result)) = finished {
                 if cmp.wants_audio {
                     let played = result.and_then(|clip| {
                         engine.play_tempo_preview(&clip, cmp.grid()?)?;
@@ -334,7 +370,7 @@ impl AudioController {
                 }
             }
             if cmp.wants_audio && self.preview_job.borrow().is_none() {
-                match PreviewJob::start(cmp.path.clone(), cmp.start) {
+                match PreviewJob::start(cmp.path.clone(), cmp.start, PreviewOwner::Tempo, 0) {
                     Ok(job) => *self.preview_job.borrow_mut() = Some(job),
                     Err(error) => {
                         cmp.wants_audio = false;

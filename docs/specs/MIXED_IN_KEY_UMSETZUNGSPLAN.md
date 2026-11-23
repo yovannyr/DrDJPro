@@ -9,7 +9,8 @@
 | 3 · R04 | [Dateikopien und mögliche Edits vor dem Import prüfen](13-library-management/R04_ABNAHME.md). Zwei laufende Decks hielten in beiden Messläufen alle 3.000 Audiofristen ein. | Eigene Varianten in Classic und Modern auswählen und beide Decks bedienen |
 | 4 · R05 | [BPM und Tonart aus Dateitag, Analyse und Katalog vergleichen](13-library-management/R05_ABNAHME.md). Schreibschutz, Dateiformate, Auswahlwechsel und Audiolast unter Windows geprüft. | Diagnose und Hörvergleich mit eigenen widersprüchlich getaggten Titeln |
 | 5 · R02 | [Wünsche, Pflichttracks und Ausschlüsse pro Auftritt](24-smart-playlist-manager/R02_ABNAHME.md). Neustart, Vorschläge, bestätigte Wiedergabe und Audiolast geprüft. | Zwei eigene Auftritte am Controller vergleichen |
-| 6–35 | Offen | Nach der Umsetzung |
+| 6 · A07 | [Tonart mit dem Referenzpiano prüfen](6-key-detection/A07_ABNAHME.md). Grundton und Dreiklang, getrennte Ausgänge, Bestätigung/Reset und Audiolast geprüft. | Eigene Passage mit dem MC4000 abhören |
+| 7–35 | Offen | Nach der Umsetzung |
 
 ## Einstieg mit 85 oder 170 BPM
 

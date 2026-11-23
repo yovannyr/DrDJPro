@@ -16,10 +16,18 @@ C/D remain the existing unsupported/read-only slots without a loaded audio sourc
 
 ## Confirmed key and energy on Library covers
 
-Select a track in **Library → Prepare**, then open **Cover labels**. Save a Camelot
+Select a track in **Library → Prepare**, then open **Cover labels / Piano**. Save a Camelot
 key such as `8A` and an optional DJ energy rating from 1 to 10. An estimated key
 can be confirmed here. Clear either field to remove its label. The rating is a
 personal catalog value, independent of loudness or gain.
+
+To check a key by ear, enter the start of the passage in seconds. **Root**
+loops the passage with its reference tonic in your headphones. **Chord** plays
+the major or minor triad for the entered Camelot key over the same passage.
+For example, `8A` plays A, C and E. **Stop** ends the preview. **Save** confirms
+the edited fields. **Reset key** removes the manual key and shows the track's
+original analysis again. Hearing the reference requires a separate headphone
+output.
 
 Classic and Modern show the same labels on artwork or on the placeholder. For
 example, `12B E10` means Camelot 12B and energy 10. The Library column controls

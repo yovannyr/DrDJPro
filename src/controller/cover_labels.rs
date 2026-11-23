@@ -27,19 +27,20 @@ impl AudioController {
                 ui.set_status(error.into());
             }
         });
-        let view = ui.as_weak();
+        let weak = Rc::downgrade(self);
         ui.on_cancel_cover_labels(move || {
-            if let Some(ui) = view.upgrade() {
-                ui.set_cover_label_editor(Default::default());
+            if let Some(c) = weak.upgrade() {
+                c.close_reference_editor();
             }
         });
     }
 
-    fn open_cover_labels(&self, ui: &AppWindow) -> Result<(), String> {
+    pub(super) fn open_cover_labels(&self, ui: &AppWindow) -> Result<(), String> {
         if ui.get_library_tab() != 4 || !self.storage_ready.get() {
             return Err("Open Prepare and wait for the library to finish loading".into());
         }
         self.close_comparison();
+        self.close_reference_editor();
         let library = self.library.borrow();
         let id = library.selected_id();
         if id < 1 || id != ui.get_selected_track() {
@@ -53,11 +54,15 @@ impl AudioController {
             .analysis
             .as_ref()
             .and_then(|analysis| CamelotKey::parse(&analysis.musical_key));
-        let status = if confirmed.is_none() && estimate.is_some() {
-            "Estimated key. Save to confirm it for this track."
-        } else {
-            "Leave a field empty to clear its label."
+        let status = match (confirmed, estimate) {
+            (Some(k), Some(a)) => format!("DJ-confirmed key: {k}. Estimated key: {a}."),
+            (Some(k), None) => format!("DJ-confirmed key: {k}. No estimated key available."),
+            (None, Some(a)) => format!("Estimated key: {a}. Save to confirm it for this track."),
+            (None, None) => {
+                "No estimated or confirmed key. Select a key to audition or confirm it.".into()
+            }
         };
+        self.begin_reference_editor(ui, track);
         ui.set_cover_label_editor(crate::CoverLabelEditor {
             open: true,
             track_id: id,
@@ -83,19 +88,21 @@ impl AudioController {
         key: &str,
         energy: &str,
     ) -> Result<(), String> {
-        let editor = ui.get_cover_label_editor();
-        if !editor.open
-            || editor.track_id != id
-            || ui.get_library_tab() != 4
-            || ui.get_selected_track() != id
-            || self.library.borrow().selected_id() != id
-        {
+        if !self.reference_current(ui, id) {
             return Err("Track changed. Reopen its cover labels in Prepare.".into());
         }
-        if !self.storage_ready.get() {
-            return Err("Wait for the library to finish loading".into());
-        }
         let labels = MusicLabels::parse(key, energy)?;
+        self.write_music_labels(ui, id, labels)?;
+        self.close_reference_editor();
+        ui.set_status("Library cover labels updated".into());
+        Ok(())
+    }
+    pub(super) fn write_music_labels(
+        &self,
+        ui: &AppWindow,
+        id: i32,
+        labels: MusicLabels,
+    ) -> Result<(), String> {
         if self.library.borrow_mut().set_music_labels(id, labels)? {
             self.library_changed();
             let rows = ui.get_library_rows();
@@ -105,8 +112,6 @@ impl AudioController {
                 }
             }
         }
-        ui.set_cover_label_editor(Default::default());
-        ui.set_status("Library cover labels updated".into());
         Ok(())
     }
 }

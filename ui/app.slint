@@ -321,6 +321,12 @@ export component AppWindow inherits Window {
     callback open-cover-labels();
     callback save-cover-labels(int, string, string);
     callback cancel-cover-labels();
+    in property <bool> reference-route;
+    in property <bool> reference-active;
+    in property <string> reference-status;
+    callback audition-reference(int, string, string, bool);
+    callback stop-reference();
+    callback reset-confirmed-key(int);
     in-out property <length> table-scroll-x;
     callback change-table-column(int, int);
     pure callback track-transfer(string) -> data-transfer;
@@ -759,6 +765,7 @@ export component AppWindow inherits Window {
     callback toggle-tempo-grid-lock();
     private property <bool> prepare-visible: root.library-tab == 4 && !root.settings-open
         && (root.view-mode == LayoutMode.Classic || root.modern-library-open);
+    out property <bool> reference-editor-visible: root.prepare-visible && root.cover-label-editor.open && !root.import-review-open;
     private property <bool> tempo-comparison-obsolete: root.tempo-comparison.open
         && (!root.prepare-visible || root.tempo-comparison.track-id != root.selected-track);
     changed tempo-comparison-obsolete => {
@@ -1327,6 +1334,12 @@ Rectangle {
             open-cover-labels => { root.open-cover-labels(); }
             save-cover-labels(id, key, energy) => { root.save-cover-labels(id, key, energy); }
             cancel-cover-labels => { root.cancel-cover-labels(); }
+            reference-route: root.reference-route;
+            reference-active: root.reference-active;
+            reference-status: root.reference-status;
+            audition-reference(id, key, start, triad) => { root.audition-reference(id, key, start, triad); }
+            stop-reference => { root.stop-reference(); }
+            reset-confirmed-key(id) => { root.reset-confirmed-key(id); }
             table-scroll-x <=> root.table-scroll-x;
             sort-field: root.table-sort-field; sort-descending: root.table-sort-descending; columns-enabled: root.table-columns-enabled;
             change-column(id, action) => { root.change-table-column(id, action); }

@@ -120,7 +120,7 @@ impl AudioController {
         let catalog = CatalogValues::from_track(track);
         drop(library);
         self.close_comparison();
-        ui.set_cover_label_editor(Default::default());
+        self.close_reference_editor();
         {
             let mut state = self.diagnosis.borrow_mut();
             state.source = Some(source);

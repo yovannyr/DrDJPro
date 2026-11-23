@@ -229,6 +229,12 @@ export component TrackLibrary inherits Rectangle {
     callback open-cover-labels();
     callback save-cover-labels(int, string, string);
     callback cancel-cover-labels();
+    in property <bool> reference-route;
+    in property <bool> reference-active;
+    in property <string> reference-status;
+    callback audition-reference(int, string, string, bool);
+    callback stop-reference();
+    callback reset-confirmed-key(int);
     in-out property <length> table-scroll-x;
     property <bool> columns-open;
     callback change-column(int, int);
@@ -360,7 +366,8 @@ export component TrackLibrary inherits Rectangle {
                     clicked => { root.open-tempo-comparison(); }
                 }
                 if !root.cover-label-editor.open : LibraryButton {
-                    text: "Cover labels"; accessible-label: "Edit confirmed cover labels";
+                    text: "Cover labels / Piano"; accessible-label: "Edit confirmed cover labels";
+                    accessible-description: "Compare the key with a reference piano in your headphones.";
                     enabled: root.selection > 0;
                     clicked => { root.open-cover-labels(); }
                 }
@@ -384,7 +391,10 @@ export component TrackLibrary inherits Rectangle {
                     LineEdit {
                         width: 64px; height: 24px; text: root.cover-label-editor.key;
                         placeholder-text: "e.g. 8A"; accessible-label: "Confirmed Camelot key";
-                        edited => { root.cover-label-editor.key = self.text; }
+                        edited => {
+                            if root.reference-active { root.stop-reference(); }
+                            root.cover-label-editor.key = self.text;
+                        }
                     }
                     Text { text: "Energy"; color: #eee; font-size: 11px; vertical-alignment: center; }
                     LineEdit {
@@ -400,6 +410,39 @@ export component TrackLibrary inherits Rectangle {
                     }
                     LibraryButton { text: "Cancel"; accessible-label: "Cancel cover labels"; clicked => { root.cancel-cover-labels(); } }
                     Rectangle { horizontal-stretch: 1; }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text { text: "Piano · Start (s)"; color: #eee; vertical-alignment: center; font-size: 11px; }
+                    passage := LineEdit {
+                        width: 56px; height: 24px; text: "0"; accessible-label: "Passage start in seconds";
+                        edited => { if root.reference-active { root.stop-reference(); } }
+                    }
+                    LibraryButton {
+                        text: "Root"; accessible-label: "Audition reference root";
+                        enabled: root.reference-route && root.cover-label-editor.track-id == root.selection;
+                        clicked => { root.audition-reference(root.selection, root.cover-label-editor.key, passage.text, false); }
+                    }
+                    LibraryButton {
+                        text: "Chord"; accessible-label: "Audition reference chord";
+                        enabled: root.reference-route && root.cover-label-editor.track-id == root.selection;
+                        clicked => { root.audition-reference(root.selection, root.cover-label-editor.key, passage.text, true); }
+                    }
+                    LibraryButton {
+                        text: "Stop"; accessible-label: "Stop reference piano"; enabled: root.reference-active;
+                        clicked => { root.stop-reference(); }
+                    }
+                    LibraryButton {
+                        text: "Reset key"; accessible-label: "Restore analyzed key";
+                        enabled: root.cover-label-editor.track-id == root.selection;
+                        clicked => { root.reset-confirmed-key(root.selection); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                if root.reference-status != "" || !root.reference-route : Text {
+                    text: root.reference-status != "" ? root.reference-status : "Choose a separate headphone output to hear the piano.";
+                    color: #ddd; font-size: 11px; wrap: word-wrap;
+                    accessible-role: text; accessible-label: "Reference piano status"; accessible-description: self.text;
                 }
                 if root.cover-label-editor.status != "" : Text {
                     text: root.cover-label-editor.status; wrap: word-wrap; color: #ffcf95; font-size: 11px;

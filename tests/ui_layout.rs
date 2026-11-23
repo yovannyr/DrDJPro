@@ -560,6 +560,60 @@ fn cover_labels_show_confirmed_catalog_values_in_both_layouts() {
 }
 
 #[test]
+fn reference_piano_uses_the_selected_passage_and_requires_headphones_in_both_layouts() {
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_audio_enabled(true);
+        ui.set_library_tab(4);
+        ui.set_selected_track(7);
+        ui.set_cover_label_editor(CoverLabelEditor {
+            open: true,
+            track_id: 7,
+            key: "8A".into(),
+            ..Default::default()
+        });
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        let action = Rc::new(Cell::new(None));
+        let received = action.clone();
+        ui.on_audition_reference(move |id, key, start, chord| {
+            assert_eq!((id, key.as_str(), start.as_str()), (7, "8A", "3.5"));
+            received.set(Some(chord));
+        });
+        let element = |name| {
+            ElementHandle::find_by_accessible_label(&ui, name)
+                .next()
+                .unwrap()
+        };
+        element("Passage start in seconds").set_accessible_value("3.5");
+        assert_eq!(
+            element("Audition reference root").accessible_enabled(),
+            Some(false)
+        );
+        click(&ui, "Audition reference chord");
+        assert_eq!(action.get(), None);
+        ui.set_reference_route(true);
+        click(&ui, "Audition reference root");
+        assert_eq!(action.get(), Some(false));
+        click(&ui, "Audition reference chord");
+        assert_eq!(action.get(), Some(true));
+        let stopped = Rc::new(Cell::new(false));
+        let received = stopped.clone();
+        ui.on_stop_reference(move || received.set(true));
+        ui.set_reference_active(true);
+        click(&ui, "Stop reference piano");
+        assert!(stopped.get());
+        let restored = Rc::new(Cell::new(0));
+        let received = restored.clone();
+        ui.on_reset_confirmed_key(move |id| received.set(id));
+        click(&ui, "Restore analyzed key");
+        assert_eq!(restored.get(), 7);
+    }
+}
+
+#[test]
 fn cover_label_editor_preserves_typed_values_and_cancels_on_track_change() {
     i_slint_backend_testing::init_no_event_loop();
     let ui = AppWindow::new().unwrap();

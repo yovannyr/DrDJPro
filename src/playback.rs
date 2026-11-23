@@ -1,4 +1,5 @@
 //! Control-plane loading and two Rodio decks. Rodio itself is not lock-free.
+mod key_reference;
 mod preview_clip;
 pub(crate) mod tempo_preview;
 use crate::deck_render::{DeckRenderer, RenderControl, RenderFormat, SeekFrame};
@@ -1481,6 +1482,21 @@ impl DualDeckEngine {
         }
         let voice = tempo_preview::Voice::new(clip, grid, self.output_rate)?;
         self.tempo_preview.start(voice);
+        Ok(())
+    }
+
+    /// Loop an excerpt with a concert-pitch tonic or triad exclusively on the headphone pair.
+    pub(crate) fn play_key_reference(
+        &self,
+        clip: &PreviewClip,
+        key: drdjpro_ui_spike::analysis::keys::CamelotKey,
+        triad: bool,
+    ) -> Result<(), String> {
+        if !self.preview_route_available() {
+            return Err("Key preview requires a separate headphone pair (3/4).".into());
+        }
+        let voice = key_reference::ReferenceVoice::new(clip, key, triad, self.output_rate)?;
+        self.tempo_preview.start_reference(voice);
         Ok(())
     }
 
@@ -5370,6 +5386,7 @@ mod tests {
     mod ai_provider_performance;
     mod gig_performance;
     mod import_review_performance;
+    mod key_reference;
     mod metadata_diagnosis_performance;
     mod render_bench;
     mod tempo_preview;

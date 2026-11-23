@@ -4,6 +4,7 @@ mod gigs;
 mod import_review;
 mod itunes;
 mod metadata_diagnosis;
+mod reference_piano;
 mod tempo_comparison;
 use crate::{
     playback::{DeckId, DualDeckEngine, LoopEdge, MixerLevels, PreparedTrack},
@@ -347,6 +348,7 @@ pub struct AudioController {
     diagnosis: RefCell<metadata_diagnosis::State>,
     comparison: RefCell<Option<tempo_comparison::Comparison>>,
     preview_job: RefCell<Option<tempo_comparison::PreviewJob>>,
+    reference: RefCell<Option<reference_piano::PianoDraft>>,
     covers: Rc<RefCell<crate::cover_cache::CoverCache>>,
     cover_visible: Rc<Cell<bool>>,
     device_opener: DeviceOpener,
@@ -459,6 +461,7 @@ pub struct AudioController {
 }
 impl Drop for AudioController {
     fn drop(&mut self) {
+        self.close_reference_editor();
         self.close_metadata_diagnosis();
         self.close_comparison();
         for id in [DeckId::A, DeckId::B] {
@@ -566,6 +569,7 @@ impl AudioController {
             diagnosis: RefCell::default(),
             comparison: RefCell::default(),
             preview_job: RefCell::default(),
+            reference: RefCell::default(),
             library: Rc::new(RefCell::new(crate::library::Library::default())),
             library_generation: Rc::new(Cell::new(0)),
             library_page: Cell::new(0),
@@ -774,6 +778,9 @@ impl AudioController {
                     let result = u16::try_from(ui.get_output_pair_index())
                         .map_err(|_| "Invalid output pair".to_string())
                         .and_then(|pair| c.engine.borrow().set_output_pair(pair));
+                    if result.is_ok() && !c.engine.borrow().preview_route_available() {
+                        c.stop_reference("Select a separate headphone output to audition.");
+                    }
                     if let Err(error) = result {
                         ui.set_output_pair_index(i32::from(c.engine.borrow().output_pair()));
                         ui.set_status(error.into());
@@ -1309,6 +1316,7 @@ impl AudioController {
         controller.wire_metadata_diagnosis(ui);
         controller.wire_import_review(ui);
         controller.wire_cover_labels(ui);
+        controller.wire_reference_piano(ui);
         controller.wire_hot_cues(ui);
         controller.wire_loops(ui);
         controller.wire_pitch(ui);
@@ -5010,6 +5018,7 @@ impl AudioController {
         self.refresh();
     }
     pub fn restore_library(&self, path: Result<PathBuf, String>, initial_paths: Vec<PathBuf>) {
+        self.close_reference_editor();
         self.close_metadata_diagnosis();
         self.invalidate_suggestion();
         self.fx_writable.set(false);
@@ -5790,6 +5799,7 @@ impl AudioController {
     }
     pub fn close_library(&self) -> Result<(), String> {
         self.invalidate_suggestion();
+        self.close_reference_editor();
         self.close_metadata_diagnosis();
         if self.import_review.borrow().is_some() {
             self.close_import_review();
@@ -6988,6 +6998,7 @@ impl AudioController {
                 ) {
                     let _ = profiles.update(route);
                 }
+                self.stop_reference("Audio device changed. Choose Play to audition again.");
                 let previous = self.engine.replace(engine);
                 let profiles = self.output_profiles_cache.borrow().clone();
                 let warning = self.restore_output_routes(profiles);
@@ -7172,6 +7183,7 @@ impl AudioController {
     }
     pub fn tick(&self) {
         self.poll_tempo_comparison();
+        self.poll_reference();
         if self.covers.borrow_mut().poll() {
             if let Some(ui) = self.ui.upgrade() {
                 let rows = ui.get_library_rows();
@@ -8005,6 +8017,7 @@ impl AudioController {
             self.publish_gig_rule(ui, selected, "");
         }
         if changed || ui.get_library_tab() != 4 {
+            self.close_reference_editor();
             self.close_metadata_diagnosis();
         }
         ui.set_selected_track(selected);
@@ -9520,6 +9533,10 @@ mod tests {
     mod import_review_workflow {
         use super::*;
         include!("controller/import_review_tests.rs");
+    }
+    mod reference_piano_workflow {
+        use super::*;
+        include!("controller/reference_piano_tests.rs");
     }
     mod cover_label_workflow {
         use super::*;
