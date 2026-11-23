@@ -200,3 +200,5 @@ As a video DJ with different venue requirements, I want multiple video layouts (
 - Multi-layer video compositing (more than 2 layers)
 - Video timeline editing or cutting
 - 3D transformations or perspective warping
+
+Für den geplanten lokalen Export eines beat-synchronen Clips aus einem vorbereiteten Audiomix gilt [Spec 37, R07](../37-set-arrangement/spec.md#r07). Der Echtzeit-Videomixer behält den oben beschriebenen Umfang.

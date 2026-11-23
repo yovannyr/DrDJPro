@@ -192,3 +192,31 @@ As a DJ preparing pads, I want to see sample name and duration on each pad so I 
 - Recording custom samples within app
 - Sample BPM sync or time-stretching
 - Complex pad modes (slicer, roll, etc.) - covered by Feature 16 (Performance Pads)
+
+## Geplante Erweiterungen für die Sampler-Bank
+
+Die folgenden Anforderungen erweitern die oben beschriebene Basiswiedergabe um Vorschau, Ebenen und tonales Spielen. Die Originaldateien dienen als Quellen. Für den MC4000 gilt die dokumentierte Bank mit vier gemeinsam genutzten Slots, die von beiden Deckseiten erreichbar ist. Das Ziel von acht Padplätzen in FR-001 und die vorhandene Hardwarebelegung sind gesondert zu prüfen. [Umsetzungsplan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md) · [GUI- und Controller-Inventar](../../GUI_COMPONENTS.md)
+
+### M01
+
+**Samples vor der Pad-Zuweisung hören.** FR-006/007 beschreiben den Browser, FR-012 die gespeicherte Belegung. Die Vorschau benötigt einen eigenen Abhörweg und ein begrenztes Speicherbudget. [Multiple](https://mixedinkey.com/multiple/)
+
+**REQ-M01** Beim Durchsuchen lokaler Samples muss der DJ eine kurze Hörprobe über den getrennten Kopfhörerausgang starten und wechseln können. Erst die bestätigte Zuweisung ersetzt den Slot. Laden und Verwerfen der Vorschauen müssen außerhalb des Audio-Callbacks erfolgen. Der Vorschaucache braucht ein in Byte prüfbares Limit. Ohne getrennten Ausgang muss die App dies melden und die Vorschau stumm lassen.
+
+**AC-M01** Während beide Decks spielen, zwanzig unterscheidbare Hörproben zügig wechseln und die Auswahl anschließend schließen. Die belegten Pads behalten ihre Zuordnung, verspätete Ladeergebnisse starten keine alte Vorschau, der Master enthält keinen Vorschauton und die erfasste Cache-Belegung bleibt im festgelegten Limit. Beim erneuten Öffnen genau ein Sample zuweisen. Nur der bestätigte Slot ändert sich. Ein Gerät mit nur einem Ausgangspaar dient als Gegenprobe.
+
+### M02
+
+**Mehrere Samples einem Pad zuweisen.** FR-003–005 behandeln Pegel, Triggerlatenz und unabhängige Stimmen mehrerer Pads. FR-012/015 behandeln Speicherung und Schutz vor Übersteuerung. Hier erhält ein einzelnes Pad eine benannte, wieder aufrufbare Kombination. [Multiple](https://mixedinkey.com/multiple/)
+
+**REQ-M02** Ein Pad muss mindestens zwei vorbereitete Ebenen gemeinsam auslösen können. Für jede Ebene gehören Quelldatei, Einsatzversatz, Pegel und Panorama zur gespeicherten Belegung. Alte Einzelbelegungen gelten als eine Ebene. Fehlende Quellen sind beim Laden zu kennzeichnen. Die Aktivierung einer unvollständigen neuen Belegung muss die vorherige funktionierende Bank erhalten. Anzahl und Speicherbedarf aktiver Stimmen sind vor der Freigabe zu begrenzen.
+
+**AC-M02** Eine mittig positionierte Kick und eine links positionierte Clap mit 20 ms Versatz, bei 48 kHz also 960 Frames, speichern. Nach Neustart löst ein Pad beide genau einmal mit konfiguriertem Abstand, Pegel und Panorama aus. Vor erneuter Aktivierung eine Quelldatei entfernen. Der Fehler benennt die betroffene Ebene und die bisherige Bank bleibt spielbar. Ein älteres Einzelpad lädt weiterhin mit seinen bisherigen Einstellungen.
+
+### M07
+
+**Tonale Pads in der gewählten Decktonart.** FR-002/004 betreffen Auslösung und Wiedergabe pro Pad. [Spec 6](../6-key-detection/spec.md) FR-005/012 umfasst Konfidenz und manuelle Tonartwahl. Der zusätzliche Spielmodus transponiert ein gestimmtes One-Shot bei der Wiedergabe. Er setzt einen bekannten oder vom DJ bestätigten Grundton voraus. [Captain Play](https://mixedinkey.com/captain-plugins/how-to-guide/captain-play/)
+
+**REQ-M07** Für ein benanntes Referenzdeck muss Dr. DJ Pro eine Belegung aus Sample-Grundton, Zieltonart und Skalenstufen berechnen, die Töne anzeigen und über Kopfhörer vorhören lassen. Erst nach Bestätigung wird die Bank aktiv. Beim Deckwechsel oder bei unsicherer Tonart bleibt die bestätigte Belegung spielbar, bis der DJ die neue Auswahl bestätigt. Ein Wechsel zurück zum normalen Padmodus stellt dessen Belegung wieder her.
+
+**AC-M07** Bei Sample-Grundton A3 und Zieltonart a-Moll lösen die ersten vier MC4000-Pads aufsteigend A3, H3, C4 und D4 aus (MIDI 57, 59, 60 und 62). Nach Wechsel der Referenz auf C-Dur zeigt die Vorschau die neuen Töne. Vor der Bestätigung spielen die Pads weiterhin die bisherigen. Ein ungestimmtes Geräusch ohne bestätigten Grundton führt zu einem Hinweis. Die ursprüngliche Sampledatei bleibt bei allen Schritten bytegleich.

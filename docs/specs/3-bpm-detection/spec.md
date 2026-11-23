@@ -171,3 +171,20 @@ As a DJ reviewing analyzed tracks, I want to see confidence scores so I can iden
 - Audio warping or beat correction
 - Multi-tempo track support (DJ mixes, medleys)
 - Machine learning-based BPM detection
+
+## Geplante Erweiterung für Prepare
+
+### D04
+
+**85/170 BPM im Kopfhörer vergleichen.** FR-007 und SC-005 behandeln automatische Oktavkorrektur, FR-008/013 die manuelle Tempoeingabe. Der hörbare Vergleich zweier Deutungen am selben Ausschnitt fehlt. Die gespeicherten Taktanfänge und die Rastersperre gehören zu [Spec 17, FR-006/007/014](../17-beat-grid-sync/spec.md). Dies ist der [erste Umsetzungsschritt](../MIXED_IN_KEY_UMSETZUNGSPLAN.md).
+
+**REQ-D04** In Prepare kann der DJ auf demselben Track und Ausschnitt zwischen zwei Halb-/Doppeltempo-Deutungen umschalten. Die App zeigt beide BPM-Werte, denselben zeitlichen Bezugspunkt, die Beatmarken und den akzentuierten ersten Schlag jedes Taktes. Die Audiodatei läuft in beiden Varianten mit gleicher Geschwindigkeit. Der Klick und der Ausschnitt werden nur über den gewählten Vorhörweg ausgegeben. Ohne getrennten Vorhörweg steht der visuelle Vergleich mit Hinweis zur Verfügung. Ein laufendes Deck behält Position, Tempo und Sync.
+
+Eine Auswahl ist zunächst ein Entwurf für den ausgewählten Titel. Erst **Übernehmen** speichert die gewählte Deutung eines konstanten, entsperrten Grids samt Downbeat atomar. Schließen, Titelwechsel, Abbruch und Speicherfehler bewahren das zuvor gespeicherte Grid. Bei gesperrten Grids und bei Tempo-, Taktwechsel- oder Warpmarkern bleibt Übernehmen im ersten Slice gesperrt. Die App erklärt den Grund. Ein komplexes Grid wird für die Vorschau nicht vereinfacht gespeichert. Werte außerhalb des unterstützten Bereichs von 40–240 BPM sind keine wählbare Variante.
+
+**AC-D04** Geplante automatisierte und manuelle Abnahme:
+
+1. Ein synthetischer 4/4-Ausschnitt mit erstem Schlag bei 1,000 s liefert bei 85 BPM Beatabstände von rund 705,882 ms und bei 170 BPM von rund 352,941 ms. Der nächste Takt beginnt bei rund 3,824 s bzw. 2,412 s. Bei 48 kHz dürfen die programmierten Klickpositionen höchstens um ein Sample vom gerundeten Soll abweichen. Beide Vorschauen starten am selben Audioframe. Ein zweiter, annotierter Ausschnitt mit gebrochenem Beat dient der Hörprobe.
+2. Während Deck A spielt, in Classic und Modern mehrfach umschalten. Der Master entspricht in einem deterministischen Test dem Referenzlauf ohne Vorschau, die akzentuierten Klicks sind im separaten Kopfhörerbus messbar. Ohne diesen Bus bleibt der Master auch beim Aktivierungsversuch unverändert.
+3. 170 BPM übernehmen, die App neu öffnen und BPM sowie Anker vergleichen. Danach 85 BPM vorhören und abbrechen. Das gespeicherte Ergebnis bleibt 170 BPM. Gegenproben mit Titelwechsel, Speicherfehler, gesperrtem Grid, einem Tempo- oder Taktwechsel, einem Warpmarker und einer ungültigen Alternative (z. B. 150 × 2). Gespeicherte Marker, Cues und Loops bleiben erhalten.
+4. Vor Freigabe den [Lastvergleich](../MIXED_IN_KEY_UMSETZUNGSPLAN.md#audio-und-daten) mit und ohne wiederholtes Umschalten durchführen. Die numerische Rasterprüfung und die 10-ms-Renderfrist messen unterschiedliche Eigenschaften. Hörprobe mit getrennter Master-/Kopfhörerausgabe gesondert protokollieren.

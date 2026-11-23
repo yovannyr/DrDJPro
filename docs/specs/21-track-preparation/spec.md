@@ -194,3 +194,13 @@ As a DJ preparing multiple tracks, I want to see preparation status and batch an
 - Phrase detection beyond beat markers
 - Automatic loop point detection
 - Track tagging and categorization (covered by Feature 13 - Library Management)
+
+## Geplante Erweiterung im Cue-Editor
+
+### D05
+
+**Cue-Feinschnitt mit Referenzpunkt.** FR-007–009 und FR-013/014 decken bereits Bearbeiten, Anspringen, Anzeige und Speicherung ab. Der fehlende Schritt ist das hörbare Einrasten relativ zu einem anderen Cue. [Einordnung im Plan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md)
+
+**REQ-D05** Im Prepare-Editor kann der DJ das Beatgrid oder einen anderen Cue desselben Titels als Bezug wählen. Bei hoher Vergrößerung muss eine Schrittweite von einem Viertelbeat verfügbar sein. Die App zeigt Bezug und Schrittweite an und erlaubt das Vorhören ab der neuen Position. Für einen Cue-Bezug bietet sie den zuletzt verschobenen anderen Cue oder den nächstliegenden Vorgänger an. Der erste Cue bei 0 ms ist gültig. Fehlt ein geeigneter Bezug oder ein lokales Tempo, bleibt die freie Bearbeitung möglich. Übernehmen speichert nur den bearbeiteten Cue, Abbrechen verwirft den Entwurf.
+
+**AC-D05** Bei 120 BPM einen Referenz-Cue auf 1.030 ms setzen. Ein Schritt von einem Viertelbeat rechts davon landet bei 1.155 ms. Zurück auf Grid-Bezug wechseln und den Unterschied am selben Ausschnitt prüfen. Im Testsignal beginnt die Vorhörprobe am verschobenen Cue auf dem Kopfhörerbus. Gegenproben mit Cue bei 0 ms, letztem Audioframe, gelöschtem Bezug und Abbruch vor dem Speichern: keine Position außerhalb der Datei, keine Verschiebung anderer Cues, keine Änderung am Master. Nach dem Speichern und Neustart ist der übernommene Wert wieder vorhanden.

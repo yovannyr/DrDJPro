@@ -176,3 +176,25 @@ As a DJ monitoring my output, I want real-time meters and spectrum analyzers so 
 - Mastering automation or ducking
 - Dithering for bit depth reduction
 - Professional loudness standards compliance (EBU R128, ATSC A/85)
+
+## Geplante Ergänzungen für den Vergleich in Prepare
+
+Die ursprünglichen FR-010, FR-012 und FR-014 betreffen Live-Lautheit, Spitzenpegel und Bypass am Master. Die folgenden Anforderungen erweitern den Umfang gezielt um den lokalen Vergleich ausgewählter Dateien und Passagen. Die [Dateianalyse](../../../src/audio_analyzer.rs) liefert bereits integrierte Lautheit, True Peak und eine Gain-Empfehlung. Messungen und zusätzliche Vorschauen werden abseits des Audiocallbacks vorbereitet.
+
+### A01
+
+**REQ-A01** Prepare zeigt Zeitbereiche mit Hinweisen auf abgeschnittene Signalspitzen. Die Diagnose unterscheidet verdächtige Verläufe von einzelnen hohen Peaks. Ein Klick vergleicht dieselbe Passage im Original und in einer bearbeiteten Vorschau bei angeglichener Lautheit über PFL. Der Vergleich verspricht keine Rekonstruktion verlorener Signalanteile. Erst ein ausdrücklicher Export schreibt eine separate Kopie.
+
+**AC-A01** Geplante Abnahme:
+
+1. Eine Datei mit absichtlich abgeflachtem 1-kHz-Ton im mittleren Testabschnitt markiert diesen Abschnitt. Der saubere Sinus mit gleichem Spitzenpegel dient als Negativkontrolle. Stille erzeugt keine Markierung.
+2. Original und Vorschau mit derselben Zeitspanne und einem unabhängigen Lautheitsmesser vergleichen. Die integrierten Werte der ausreichend langen, hörbaren Passage liegen höchstens 0,5 LU auseinander. Beim Abbruch stimmen Quelldatei und Masterausgabe mit der Kontrollmessung überein. Beim Export bleibt die Prüfsumme des Originals erhalten.
+
+### A02
+
+**REQ-A02** Für zwei ausgewählte Mixpassagen zeigt Prepare für denselben Zeitbereich die Lautheitsdifferenz B minus A in LU an, einmal für den Gesamtmix und separat für die vorbereiteten Drum-Stems. Grundlage für den zweiten Wert sind Datei, Version und zeitliche Zuordnung der [optionalen Stems aus Spec 12](../12-stem-control/spec.md) (FR-001, FR-004, FR-011). Bei fehlendem, veraltetem oder zu leisem Stem erscheint der Drum-Wert als nicht ermittelbar. Die Anzeige verstellt keinen Kanal-Gain.
+
+**AC-A02** Geplante Abnahme:
+
+1. Zwei Testmischungen mit gleich lauter Gesamtpassage und einem bekannten Pegelunterschied von +6 LU der isolierten Drums erstellen. Die gemessenen Differenzen liegen bei 0 und +6 LU, jeweils mit höchstens 0,5 LU Abweichung vom Referenzmesser. Vertauschen von A und B dreht das Vorzeichen des Drum-Unterschieds um.
+2. Bei fehlendem Stem und erneut mit einem stummen Stem die Auswahl öffnen. Die Gesamtlautheit bleibt verfügbar. Für die Drums wird kein Zahlenwert erfunden. Die bestehende Gain-Einstellung bleibt in beiden Fällen erhalten.
