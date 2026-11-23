@@ -1,4 +1,5 @@
 //! GUI control plane with injectable file selection and one bounded load worker.
+mod clip_check;
 mod cover_labels;
 mod gigs;
 mod import_review;
@@ -346,6 +347,7 @@ impl SearchWorker {
 }
 
 pub struct AudioController {
+    clip_check: RefCell<clip_check::State>,
     diagnosis: RefCell<metadata_diagnosis::State>,
     comparison: RefCell<Option<tempo_comparison::Comparison>>,
     preview_job: RefCell<Option<tempo_comparison::PreviewJob>>,
@@ -463,6 +465,7 @@ pub struct AudioController {
 }
 impl Drop for AudioController {
     fn drop(&mut self) {
+        self.close_clip_check();
         self.close_sample_browser();
         self.close_reference_editor();
         self.close_metadata_diagnosis();
@@ -573,6 +576,7 @@ impl AudioController {
             comparison: RefCell::default(),
             preview_job: RefCell::default(),
             reference: RefCell::default(),
+            clip_check: RefCell::default(),
             sample_browser: RefCell::default(),
             library: Rc::new(RefCell::new(crate::library::Library::default())),
             library_generation: Rc::new(Cell::new(0)),
@@ -785,6 +789,7 @@ impl AudioController {
                     if result.is_ok() && !c.engine.borrow().preview_route_available() {
                         c.stop_reference("Select a separate headphone output to audition.");
                         c.poll_sample_browser();
+                        c.poll_clip_check();
                     }
                     if let Err(error) = result {
                         ui.set_output_pair_index(i32::from(c.engine.borrow().output_pair()));
@@ -1323,6 +1328,7 @@ impl AudioController {
         controller.wire_cover_labels(ui);
         controller.wire_reference_piano(ui);
         controller.wire_sample_browser(ui);
+        controller.wire_clip_check(ui);
         controller.wire_hot_cues(ui);
         controller.wire_loops(ui);
         controller.wire_pitch(ui);
@@ -5024,6 +5030,7 @@ impl AudioController {
         self.refresh();
     }
     pub fn restore_library(&self, path: Result<PathBuf, String>, initial_paths: Vec<PathBuf>) {
+        self.close_clip_check();
         self.close_sample_browser();
         self.close_reference_editor();
         self.close_metadata_diagnosis();
@@ -5805,6 +5812,7 @@ impl AudioController {
         }
     }
     pub fn close_library(&self) -> Result<(), String> {
+        self.close_clip_check();
         self.close_sample_browser();
         self.invalidate_suggestion();
         self.close_reference_editor();
@@ -7011,6 +7019,7 @@ impl AudioController {
                     let _ = profiles.update(route);
                 }
                 self.close_sample_browser();
+                self.close_clip_check();
                 self.stop_reference("Audio device changed. Choose Play to audition again.");
                 let previous = self.engine.replace(engine);
                 let profiles = self.output_profiles_cache.borrow().clone();
@@ -7198,6 +7207,7 @@ impl AudioController {
         self.poll_tempo_comparison();
         self.poll_reference();
         self.poll_sample_browser();
+        self.poll_clip_check();
         if self.covers.borrow_mut().poll() {
             if let Some(ui) = self.ui.upgrade() {
                 let rows = ui.get_library_rows();
@@ -8031,6 +8041,7 @@ impl AudioController {
             self.publish_gig_rule(ui, selected, "");
         }
         if changed || ui.get_library_tab() != 4 {
+            self.close_clip_check();
             self.close_reference_editor();
             self.close_metadata_diagnosis();
         }
@@ -9555,6 +9566,10 @@ mod tests {
     mod sample_browser_workflow {
         use super::*;
         include!("controller/sample_browser_tests.rs");
+    }
+    mod clip_check_workflow {
+        use super::*;
+        include!("controller/clip_check_tests.rs");
     }
     mod cover_label_workflow {
         use super::*;

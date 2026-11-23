@@ -83,6 +83,15 @@ fn raw_probe(
     source: impl MediaSource + 'static,
     options: &MetadataOptions,
 ) -> Result<ProbeResult, Error> {
+    raw_probe_with_format(path, source, options, &FormatOptions::default())
+}
+
+fn raw_probe_with_format(
+    path: &Path,
+    source: impl MediaSource + 'static,
+    options: &MetadataOptions,
+    format: &FormatOptions,
+) -> Result<ProbeResult, Error> {
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|x| x.to_str()) {
         hint.with_extension(ext);
@@ -90,7 +99,7 @@ fn raw_probe(
     symphonia::default::get_probe().format(
         &hint,
         MediaSourceStream::new(Box::new(source), Default::default()),
-        &FormatOptions::default(),
+        format,
         options,
     )
 }
@@ -110,17 +119,27 @@ pub(crate) fn probe(
     path: &Path,
     options: &MetadataOptions,
 ) -> Result<(ProbeResult, Option<String>), Error> {
-    match raw_probe(path, open_regular(path)?, options) {
+    probe_with_format(path, options, &FormatOptions::default())
+}
+
+/// Keep identical recovery semantics for consumers that need the gapless presentation timeline.
+pub(crate) fn probe_with_format(
+    path: &Path,
+    options: &MetadataOptions,
+    format: &FormatOptions,
+) -> Result<(ProbeResult, Option<String>), Error> {
+    match raw_probe_with_format(path, open_regular(path)?, options, format) {
         Ok(result) => Ok((result, None)),
         Err(error) => {
             if let Ok(source) = mpeg_wave_source(path) {
-                let result = raw_probe(Path::new("payload.mp3"), source, options)
-                    .and_then(require_mp3)
-                    .map_err(|error| explain_failure(path, error))?;
+                let result =
+                    raw_probe_with_format(Path::new("payload.mp3"), source, options, format)
+                        .and_then(require_mp3)
+                        .map_err(|error| explain_failure(path, error))?;
                 Ok((result, Some(WAVE_WARNING.into())))
             } else if eligible(path, &error) {
                 let source = AudioWindow::after_id3(path)?;
-                let result = raw_probe(path, source, options)?;
+                let result = raw_probe_with_format(path, source, options, format)?;
                 Ok((result, Some(format!("{TAG_WARNING}{error}"))))
             } else {
                 Err(explain_failure(path, error))

@@ -1,4 +1,5 @@
 //! Control-plane loading and two Rodio decks. Rodio itself is not lock-free.
+pub(crate) mod clip_diagnosis;
 mod key_reference;
 mod preview_clip;
 mod sample_preview;
@@ -5398,6 +5399,7 @@ mod tests {
     }
 
     mod ai_provider_performance;
+    mod clip_check_audio;
     mod gig_performance;
     mod import_review_performance;
     mod key_reference;

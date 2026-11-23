@@ -119,6 +119,7 @@ impl AudioController {
         };
         let catalog = CatalogValues::from_track(track);
         drop(library);
+        self.close_clip_check();
         self.close_comparison();
         self.close_reference_editor();
         {

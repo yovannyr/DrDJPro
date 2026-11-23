@@ -765,6 +765,19 @@ export component AppWindow inherits Window {
     in property <TempoComparisonView> tempo-comparison;
     callback open-tempo-comparison();
     in property <MetadataDiagnosisView> metadata-diagnosis;
+    in property <bool> clip-check-open;
+    in property <[string]> clip-check-markers;
+    in property <int> clip-check-index: -1;
+    in property <string> clip-check-status;
+    in property <bool> clip-check-route;
+    in property <bool> clip-check-busy;
+    in property <int> clip-check-track;
+    callback open-clip-check();
+    callback select-clip-marker(int);
+    callback audition-clip-check(bool);
+    callback stop-clip-check();
+    callback export-clip-check();
+    callback close-clip-check();
     callback open-metadata-diagnosis();
     callback close-metadata-diagnosis();
     in property <[string]> gig-names;
@@ -781,6 +794,10 @@ export component AppWindow inherits Window {
     private property <bool> prepare-visible: root.library-tab == 4 && !root.settings-open
         && (root.view-mode == LayoutMode.Classic || root.modern-library-open);
     out property <bool> reference-editor-visible: root.prepare-visible && root.cover-label-editor.open && !root.import-review-open;
+    out property <bool> clip-check-visible: root.prepare-visible && root.clip-check-open && !root.import-review-open
+        && root.clip-check-track == root.selected-track;
+    private property <bool> clip-check-obsolete: root.clip-check-open && !root.clip-check-visible;
+    changed clip-check-obsolete => { if root.clip-check-obsolete { root.close-clip-check(); } }
     private property <bool> tempo-comparison-obsolete: root.tempo-comparison.open
         && (!root.prepare-visible || root.tempo-comparison.track-id != root.selected-track);
     changed tempo-comparison-obsolete => {
@@ -795,7 +812,7 @@ export component AppWindow inherits Window {
     changed diagnosis-obsolete => { if root.diagnosis-obsolete { root.close-metadata-diagnosis(); } }
     private property <bool> gig-planning-obsolete: root.gig-planning-open
         && (!root.prepare-visible || root.import-review-open || root.tempo-comparison.open
-            || root.cover-label-editor.open || root.metadata-diagnosis.open);
+            || root.cover-label-editor.open || root.metadata-diagnosis.open || root.clip-check-open);
     changed gig-planning-obsolete => { if root.gig-planning-obsolete { root.gig-planning-open = false; } }
     callback analyze-library();
     callback add-phrase-cues();
@@ -849,6 +866,7 @@ export component AppWindow inherits Window {
         width: 100%; height: 100%;
         capture-key-pressed(event) => {
             if event.text == Key.Escape && root.samp-preview-open { root.close-sample-browser(); return accept; }
+            if event.text == Key.Escape && root.clip-check-open { root.close-clip-check(); return accept; }
             if event.text == Key.Escape && root.cancel-library-drag() { return accept; }
             if event.text == Key.Escape && root.gig-planning-open && !root.gig-planning-obsolete {
                 root.gig-planning-open = false; root.focus-library-tracks(); return accept;
@@ -1362,6 +1380,16 @@ Rectangle {
             analysis-title: root.analysis-title; analysis-summary: root.analysis-summary; analysis-waveform: root.analysis-waveform;
             tempo-comparison: root.tempo-comparison;
             metadata-diagnosis: root.metadata-diagnosis;
+            clip-check-open: root.clip-check-visible;
+            clip-check-markers: root.clip-check-markers;
+            clip-check-index: root.clip-check-index; clip-check-status: root.clip-check-status;
+            clip-check-route: root.clip-check-route; clip-check-busy: root.clip-check-busy; clip-check-track: root.clip-check-track;
+            open-clip-check => { root.open-clip-check(); }
+            select-clip-marker(index) => { root.select-clip-marker(index); }
+            audition-clip-check(processed) => { root.audition-clip-check(processed); }
+            stop-clip-check => { root.stop-clip-check(); }
+            export-clip-check => { root.export-clip-check(); }
+            close-clip-check => { root.close-clip-check(); }
             open-metadata-diagnosis => { root.open-metadata-diagnosis(); }
             close-metadata-diagnosis => { root.close-metadata-diagnosis(); }
             gig-planning-open <=> root.gig-planning-open;

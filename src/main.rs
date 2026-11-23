@@ -11,6 +11,7 @@ mod audio_formats;
 mod audio_identity;
 mod beatgrid;
 mod cancellation;
+mod clip_export;
 mod controller;
 mod cover_art;
 mod cover_cache;

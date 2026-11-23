@@ -269,6 +269,7 @@ impl AudioController {
     }
 
     fn open_comparison(&self) -> Result<(), String> {
+        self.close_clip_check();
         self.close_sample_browser();
         self.close_comparison();
         let ui = self.ui.upgrade().ok_or("Window closed")?;

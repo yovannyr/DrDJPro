@@ -181,6 +181,7 @@ impl AudioController {
         {
             return;
         }
+        self.close_clip_check();
         self.close_comparison();
         self.close_reference_editor();
         self.close_sample_browser();

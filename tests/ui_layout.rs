@@ -560,6 +560,53 @@ fn cover_labels_show_confirmed_catalog_values_in_both_layouts() {
 }
 
 #[test]
+fn clipped_peak_inspection_exposes_matched_auditions_and_an_explicit_export() {
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_modern_library_open(true);
+        ui.set_library_tab(4);
+        ui.set_audio_enabled(true);
+        ui.set_selected_track(17);
+        let target = ui.as_weak();
+        ui.on_open_clip_check(move || {
+            let ui = target.unwrap();
+            ui.set_clip_check_track(17);
+            ui.set_clip_check_markers(slint::ModelRc::from(["2.0–3.5 s".into()]));
+            ui.set_clip_check_index(0);
+            ui.set_clip_check_open(true);
+        });
+        let target = ui.as_weak();
+        ui.on_close_clip_check(move || target.unwrap().set_clip_check_open(false));
+        let source = Rc::new(Cell::new(None));
+        let seen = source.clone();
+        ui.on_audition_clip_check(move |processed| seen.set(Some(processed)));
+        let writes = Rc::new(Cell::new(0));
+        let seen = writes.clone();
+        ui.on_export_clip_check(move || seen.set(seen.get() + 1));
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        click(&ui, "Find clipped peaks");
+        assert!(ui.get_clip_check_visible());
+        click(&ui, "Hear original passage");
+        assert_eq!(source.get(), None);
+        ui.set_clip_check_route(true);
+        click(&ui, "Hear original passage");
+        assert_eq!(source.get(), Some(false));
+        click(&ui, "Hear loudness-matched processed passage");
+        assert_eq!(source.get(), Some(true));
+        assert_eq!(writes.get(), 0);
+        click(&ui, "Export processed WAV copy");
+        assert_eq!(writes.get(), 1);
+        ui.set_selected_track(19);
+        assert!(!ui.get_clip_check_visible());
+        slint::platform::update_timers_and_animations();
+        assert!(!ui.get_clip_check_open());
+    }
+}
+
+#[test]
 fn sampler_browser_keeps_selection_separate_from_assignment_in_both_layouts() {
     use slint::ModelRc;
     i_slint_backend_testing::init_no_event_loop();

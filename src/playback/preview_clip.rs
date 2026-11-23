@@ -12,8 +12,8 @@ use std::{
 pub(crate) const PREVIEW_DURATION: Duration = Duration::from_secs(8);
 const SAMPLE_DURATION: Duration = Duration::from_secs(3);
 
-#[derive(PartialEq, Eq)]
-struct SampleVersion {
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct SampleVersion {
     path: PathBuf,
     start: Duration,
     stamp: Stamp,
@@ -21,7 +21,7 @@ struct SampleVersion {
 }
 
 impl SampleVersion {
-    fn read(path: &Path, start: Duration) -> Result<Option<Self>, String> {
+    pub(super) fn read(path: &Path, start: Duration) -> Result<Option<Self>, String> {
         let file = crate::media_input::open_regular(path)
             .map_err(|e| format!("Cannot inspect sample: {e}"))?;
         Ok(Stamp::for_cache(&file)
@@ -147,7 +147,7 @@ fn opus_clip(
     finish(pcm, channels, RATE, frame_time(first, RATE), cancel)
 }
 
-fn finish(
+pub(super) fn finish(
     pcm: Vec<f32>,
     channels: u16,
     rate: u32,
