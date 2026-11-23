@@ -87,6 +87,7 @@ impl From<&BeatGrid> for BeatGridMessage {
                 })
                 .collect(),
             points: Vec::new(),
+            locked: grid.is_locked().then_some(true),
         }
     }
 }
@@ -121,7 +122,7 @@ impl TryFrom<BeatGridMessage> for BeatGrid {
         for m in value.warp_markers {
             grid = grid.with_warp_marker(m.beat, Duration::from_nanos(m.position_ns))?;
         }
-        Ok(grid)
+        Ok(grid.with_locked(value.locked.unwrap_or(false)))
     }
 }
 
@@ -373,7 +374,8 @@ mod tests {
                 .with_tempo_change(8, 124.987654321)
                 .unwrap()
                 .with_warp_marker(10, Duration::from_secs(5))
-                .unwrap(),
+                .unwrap()
+                .with_locked(true),
         );
         track
             .hot_cues

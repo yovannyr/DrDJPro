@@ -183,6 +183,18 @@ pub(crate) fn decode_stream(
     cancel: &Cancellation,
     mut consume: impl FnMut(u16, u32, &[f32]) -> Result<(), String>,
 ) -> Result<(), String> {
+    decode_stream_until(path, cancel, |channels, rate, pcm| {
+        consume(channels, rate, pcm)?;
+        Ok(false)
+    })
+}
+
+/// As above, with an early successful return when the consumer has filled its excerpt.
+pub(crate) fn decode_stream_until(
+    path: &Path,
+    cancel: &Cancellation,
+    mut complete: impl FnMut(u16, u32, &[f32]) -> Result<bool, String>,
+) -> Result<(), String> {
     cancel.check()?;
     let (final_granule, empty_eos, first_page_packets) = terminal_page(path, cancel)?;
     let file = File::open(path).map_err(|e| e.to_string())?;
@@ -237,7 +249,9 @@ pub(crate) fn decode_stream(
             return Err("Non-finite audio sample".into());
         }
         if !trimmed.is_empty() {
-            consume(channels as u16, RATE as u32, trimmed)?;
+            if complete(channels as u16, RATE as u32, trimmed)? {
+                return cancel.check();
+            }
             sample_count = sample_count
                 .checked_add(trimmed.len() as u64)
                 .ok_or("PCM sample count overflow")?;

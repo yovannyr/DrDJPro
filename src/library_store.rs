@@ -1,7 +1,9 @@
 //! SQLite catalog storage. The worker owns every database/file operation.
+mod prepare_grid;
 use crate::library::{self, Catalog, Library, SavedTrack};
 use crate::output_preferences::{OutputRoute, OutputRoutes, MAX_ROUTES_BYTES};
 use crate::preferences::QuantizePreferences;
+use prepare_grid::PrepareGridWrite;
 const OUTPUT_ROUTES_QUERY:&str="SELECT CASE WHEN length(CAST(value AS BLOB))<=65536 THEN value ELSE '' END FROM library_meta WHERE key='audio_output_routes_v1'";
 const QUANTIZE_PREFS_QUERY: &str = "SELECT CASE WHEN length(CAST(value AS BLOB))<=1024 THEN value ELSE '' END FROM library_meta WHERE key='quantize_preferences_v1'";
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior};
@@ -18,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 const APPLICATION_ID: i32 = 0x4452444a;
-const SCHEMA_VERSION: i32 = 18;
+const SCHEMA_VERSION: i32 = 19;
 const DECK_SESSION_QUERY: &str = "SELECT CASE WHEN length(CAST(value AS BLOB))<=256 THEN value ELSE '' END FROM library_meta WHERE key='deck_session_v1'";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -253,18 +255,20 @@ fn inspect(connection: &Connection) -> Result<Option<Catalog>, InspectError> {
     }
     if version >= 4 {
         let indices: HashMap<_, _> = tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
-        let mut statement = connection.prepare(if version >= 13 {
-            "SELECT track_id,bpm,anchor_ns,beats_per_bar,base_meter_denominator,meter_changes,tempo_changes,warp_markers FROM track_grids LIMIT ?1"
+        let mut statement = connection.prepare(if version >= 19 {
+            "SELECT track_id,bpm,anchor_ns,beats_per_bar,base_meter_denominator,meter_changes,tempo_changes,warp_markers,locked FROM track_grids LIMIT ?1"
+        } else if version >= 13 {
+            "SELECT track_id,bpm,anchor_ns,beats_per_bar,base_meter_denominator,meter_changes,tempo_changes,warp_markers,0 FROM track_grids LIMIT ?1"
         } else if version >= 12 {
-            "SELECT track_id,bpm,anchor_ns,beats_per_bar,base_meter_denominator,meter_changes,tempo_changes,'[]' FROM track_grids LIMIT ?1"
+            "SELECT track_id,bpm,anchor_ns,beats_per_bar,base_meter_denominator,meter_changes,tempo_changes,'[]',0 FROM track_grids LIMIT ?1"
         } else if version >= 10 {
-            "SELECT track_id,bpm,anchor_ns,beats_per_bar,4,meter_changes,tempo_changes,'[]' FROM track_grids LIMIT ?1"
+            "SELECT track_id,bpm,anchor_ns,beats_per_bar,4,meter_changes,tempo_changes,'[]',0 FROM track_grids LIMIT ?1"
         } else if version >= 8 {
-            "SELECT track_id,bpm,anchor_ns,beats_per_bar,4,meter_changes,'[]','[]' FROM track_grids LIMIT ?1"
+            "SELECT track_id,bpm,anchor_ns,beats_per_bar,4,meter_changes,'[]','[]',0 FROM track_grids LIMIT ?1"
         } else if version >= 7 {
-            "SELECT track_id,bpm,anchor_ns,beats_per_bar,4,'[]','[]','[]' FROM track_grids LIMIT ?1"
+            "SELECT track_id,bpm,anchor_ns,beats_per_bar,4,'[]','[]','[]',0 FROM track_grids LIMIT ?1"
         } else {
-            "SELECT track_id,bpm,anchor_ns,4,4,'[]','[]','[]' FROM track_grids LIMIT ?1"
+            "SELECT track_id,bpm,anchor_ns,4,4,'[]','[]','[]',0 FROM track_grids LIMIT ?1"
         })?;
         let mut rows = statement.query([library::MAX_TRACKS as i64 + 1])?;
         let mut count = 0;
@@ -276,85 +280,7 @@ fn inspect(connection: &Connection) -> Result<Option<Catalog>, InspectError> {
             let index = indices
                 .get(&row.get::<_, i32>(0)?)
                 .ok_or_else(|| InspectError::Damaged("Orphaned track grid".into()))?;
-            let anchor = u64::try_from(row.get::<_, i64>(2)?)
-                .map_err(|_| InspectError::Damaged("Negative grid anchor".into()))?;
-            tracks[*index].grid = Some(
-                crate::beatgrid::BeatGrid::new(row.get(1)?, Duration::from_nanos(anchor))
-                    .and_then(|grid| {
-                        grid.with_time_signature(
-                            row.get::<_, u8>(3).map_err(|e| e.to_string())?,
-                            row.get::<_, u8>(4).map_err(|e| e.to_string())?,
-                        )
-                    })
-                    .map_err(InspectError::Damaged)?,
-            );
-            let json: String = row.get(5)?;
-            if json.len() > 2048 {
-                return Err(InspectError::Damaged("Oversized meter map".into()));
-            }
-            let changes: Vec<crate::beatgrid::MeterChange> =
-                serde_json::from_str(&json).map_err(|e| InspectError::Damaged(e.to_string()))?;
-            if changes.len() > crate::beatgrid::MAX_METER_CHANGES {
-                return Err(InspectError::Damaged("Too many meter changes".into()));
-            }
-            let mut last = 1;
-            let mut grid = tracks[*index].grid.unwrap();
-            for change in changes {
-                if change.bar <= last {
-                    return Err(InspectError::Damaged(
-                        "Unsorted or duplicate meter changes".into(),
-                    ));
-                }
-                last = change.bar;
-                grid = grid
-                    .with_time_signature_change(change.bar, change.beats, change.denominator)
-                    .map_err(InspectError::Damaged)?;
-            }
-            let json: String = row.get(6)?;
-            if json.len() > 4096 {
-                return Err(InspectError::Damaged("Oversized tempo map".into()));
-            }
-            let changes: Vec<crate::beatgrid::TempoChange> =
-                serde_json::from_str(&json).map_err(|e| InspectError::Damaged(e.to_string()))?;
-            if changes.len() > crate::beatgrid::MAX_TEMPO_CHANGES {
-                return Err(InspectError::Damaged("Too many tempo changes".into()));
-            }
-            let mut last = 0;
-            for change in changes {
-                if change.beat <= last {
-                    return Err(InspectError::Damaged(
-                        "Unsorted or duplicate tempo changes".into(),
-                    ));
-                }
-                last = change.beat;
-                grid = grid
-                    .with_tempo_change(change.beat, change.bpm)
-                    .map_err(InspectError::Damaged)?;
-            }
-            let json: String = row.get(7)?;
-            if json.len() > 4096 {
-                return Err(InspectError::Damaged("Oversized warp-marker map".into()));
-            }
-            let markers: Vec<crate::beatgrid::WarpMarker> =
-                serde_json::from_str(&json).map_err(|e| InspectError::Damaged(e.to_string()))?;
-            if markers.len() > crate::beatgrid::MAX_WARP_MARKERS {
-                return Err(InspectError::Damaged("Too many warp markers".into()));
-            }
-            let mut last_beat = 0;
-            let mut last_position = anchor;
-            for marker in markers {
-                if marker.beat <= last_beat || marker.position_ns <= last_position {
-                    return Err(InspectError::Damaged(
-                        "Unsorted or duplicate warp markers".into(),
-                    ));
-                }
-                last_beat = marker.beat;
-                last_position = marker.position_ns;
-                grid = grid
-                    .with_warp_marker(marker.beat, Duration::from_nanos(marker.position_ns))
-                    .map_err(InspectError::Damaged)?;
-            }
-            tracks[*index].grid = Some(grid);
+            tracks[*index].grid = Some(read_grid_row(row)?);
         }
     }
     if version >= 5 {
@@ -387,6 +313,85 @@ fn inspect(connection: &Connection) -> Result<Option<Catalog>, InspectError> {
     catalog.validate().map_err(InspectError::Damaged)?;
     Ok(Some(catalog))
 }
+fn read_grid_row(row: &rusqlite::Row<'_>) -> Result<crate::beatgrid::BeatGrid, InspectError> {
+    let anchor = u64::try_from(row.get::<_, i64>(2)?)
+        .map_err(|_| InspectError::Damaged("Negative grid anchor".into()))?;
+    let mut grid = crate::beatgrid::BeatGrid::new(row.get(1)?, Duration::from_nanos(anchor))
+        .and_then(|grid| {
+            grid.with_time_signature(
+                row.get::<_, u8>(3).map_err(|e| e.to_string())?,
+                row.get::<_, u8>(4).map_err(|e| e.to_string())?,
+            )
+        })
+        .map_err(InspectError::Damaged)?;
+    let json: String = row.get(5)?;
+    if json.len() > 2048 {
+        return Err(InspectError::Damaged("Oversized meter map".into()));
+    }
+    let changes: Vec<crate::beatgrid::MeterChange> =
+        serde_json::from_str(&json).map_err(|e| InspectError::Damaged(e.to_string()))?;
+    if changes.len() > crate::beatgrid::MAX_METER_CHANGES {
+        return Err(InspectError::Damaged("Too many meter changes".into()));
+    }
+    let mut last = 1;
+    for change in changes {
+        if change.bar <= last {
+            return Err(InspectError::Damaged(
+                "Unsorted or duplicate meter changes".into(),
+            ));
+        }
+        last = change.bar;
+        grid = grid
+            .with_time_signature_change(change.bar, change.beats, change.denominator)
+            .map_err(InspectError::Damaged)?;
+    }
+    let json: String = row.get(6)?;
+    if json.len() > 4096 {
+        return Err(InspectError::Damaged("Oversized tempo map".into()));
+    }
+    let changes: Vec<crate::beatgrid::TempoChange> =
+        serde_json::from_str(&json).map_err(|e| InspectError::Damaged(e.to_string()))?;
+    if changes.len() > crate::beatgrid::MAX_TEMPO_CHANGES {
+        return Err(InspectError::Damaged("Too many tempo changes".into()));
+    }
+    let mut last = 0;
+    for change in changes {
+        if change.beat <= last {
+            return Err(InspectError::Damaged(
+                "Unsorted or duplicate tempo changes".into(),
+            ));
+        }
+        last = change.beat;
+        grid = grid
+            .with_tempo_change(change.beat, change.bpm)
+            .map_err(InspectError::Damaged)?;
+    }
+    let json: String = row.get(7)?;
+    if json.len() > 4096 {
+        return Err(InspectError::Damaged("Oversized warp-marker map".into()));
+    }
+    let markers: Vec<crate::beatgrid::WarpMarker> =
+        serde_json::from_str(&json).map_err(|e| InspectError::Damaged(e.to_string()))?;
+    if markers.len() > crate::beatgrid::MAX_WARP_MARKERS {
+        return Err(InspectError::Damaged("Too many warp markers".into()));
+    }
+    let mut last_beat = 0;
+    let mut last_position = anchor;
+    for marker in markers {
+        if marker.beat <= last_beat || marker.position_ns <= last_position {
+            return Err(InspectError::Damaged(
+                "Unsorted or duplicate warp markers".into(),
+            ));
+        }
+        last_beat = marker.beat;
+        last_position = marker.position_ns;
+        grid = grid
+            .with_warp_marker(marker.beat, Duration::from_nanos(marker.position_ns))
+            .map_err(InspectError::Damaged)?;
+    }
+    Ok(grid.with_locked(row.get(8)?))
+}
+
 fn read_crates(
     connection: &Connection,
     version: i32,
@@ -711,6 +716,19 @@ fn write_hot_cues_rows(connection: &Connection, tracks: &[SavedTrack]) -> Result
 fn create_grid_schema(connection: &Connection) -> Result<(), String> {
     connection.execute_batch("CREATE TABLE track_grids(track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,bpm REAL NOT NULL CHECK(bpm>=40 AND bpm<=240),anchor_ns INTEGER NOT NULL CHECK(anchor_ns>=0 AND anchor_ns<=604800000000000)) STRICT;").map_err(|e|e.to_string())
 }
+fn add_grid_lock(connection: &Connection) -> Result<(), String> {
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('track_grids') WHERE name='locked')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !exists {
+        connection.execute_batch("ALTER TABLE track_grids ADD COLUMN locked INTEGER NOT NULL DEFAULT 0 CHECK(locked IN (0,1));").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
 fn add_grid_meter(connection: &Connection) -> Result<(), String> {
     connection.execute_batch("ALTER TABLE track_grids ADD COLUMN beats_per_bar INTEGER NOT NULL DEFAULT 4 CHECK(beats_per_bar BETWEEN 1 AND 16);").map_err(|e| e.to_string())
 }
@@ -771,7 +789,7 @@ fn write_grids(connection: &Connection, catalog: &Catalog) -> Result<(), String>
 fn write_grids_rows(connection: &Connection, tracks: &[SavedTrack]) -> Result<(), String> {
     let mut statement = connection
         .prepare(
-            "INSERT INTO track_grids(track_id,bpm,anchor_ns,beats_per_bar,base_meter_denominator,meter_changes,tempo_changes,warp_markers) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            "INSERT INTO track_grids(track_id,bpm,anchor_ns,beats_per_bar,base_meter_denominator,meter_changes,tempo_changes,warp_markers,locked) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
         )
         .map_err(|e| e.to_string())?;
     for track in tracks {
@@ -785,7 +803,8 @@ fn write_grids_rows(connection: &Connection, tracks: &[SavedTrack]) -> Result<()
                     grid.meter_denominator(),
                     serde_json::to_string(grid.meter_changes()).map_err(|e| e.to_string())?,
                     serde_json::to_string(grid.tempo_changes()).map_err(|e| e.to_string())?,
-                    serde_json::to_string(grid.warp_markers()).map_err(|e| e.to_string())?
+                    serde_json::to_string(grid.warp_markers()).map_err(|e| e.to_string())?,
+                    grid.is_locked()
                 ])
                 .map_err(|e| e.to_string())?;
         }
@@ -1001,6 +1020,7 @@ fn initialize(connection: &mut Connection, catalog: &Catalog, source: &str) -> R
     add_grid_tempo_changes(&transaction)?;
     add_grid_base_meter_denominator(&transaction)?;
     add_grid_warp_markers(&transaction)?;
+    add_grid_lock(&transaction)?;
     create_hot_cue_schema(&transaction)?;
     create_saved_loop_schema(&transaction)?;
     create_history_schema(&transaction)?;
@@ -1260,6 +1280,9 @@ impl Store {
             }
             if version < 18 {
                 add_imported_tag_preference(&tx)?;
+            }
+            if version < 19 {
+                add_grid_lock(&tx)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)
                 .map_err(|e| e.to_string())?;
@@ -1845,6 +1868,7 @@ pub enum Event {
     CheckpointFailed(String),
 }
 enum Command {
+    PrepareGrid(Box<PrepareGridWrite>),
     SaveSampler(
         crate::sampler::Preferences,
         Option<mpsc::Sender<Result<(), String>>>,
@@ -1982,6 +2006,10 @@ impl Worker {
                                 Ok(selection)
                             })();
                             let _=events_tx.send(Event::StartupAudioSaved(result));
+                        }
+                        Command::PrepareGrid(request) => {
+                            let result = store.apply_prepare_grid(&request);
+                            let _ = request.reply.send(result);
                         }
                         Command::SaveDelta(delta, preferences, output, fx, deck_session, columns) => {
                             let result = store.save_session_state_with_columns(
@@ -2884,6 +2912,166 @@ mod tests {
             history: Vec::new(),
         }
     }
+    #[test]
+    fn prepare_tempo_upgrade_commit_and_reopen_preserve_cues_loops_and_lock() {
+        use crate::beatgrid::{BeatGrid, TempoComparison};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("library.sqlite3");
+        let path = dir.path().join("broken-beat.wav");
+        let anchor = Duration::from_secs(1);
+        let slow = BeatGrid::new(85., anchor).unwrap();
+        let fast = TempoComparison::new(Some(slow), 85., anchor)
+            .unwrap()
+            .apply_candidate(2., Some(slow))
+            .unwrap();
+        let mut data = catalog(path.clone(), 7);
+        let track = &mut data.tracks[0];
+        track.grid = Some(slow);
+        track
+            .hot_cues
+            .set(
+                2,
+                Some(crate::hot_cues::HotCue::new(anchor, "Intro".into(), 0x428844).unwrap()),
+            )
+            .unwrap();
+        track
+            .saved_loops
+            .set(
+                4,
+                Some(
+                    crate::saved_loops::SavedLoop::new(
+                        anchor,
+                        Duration::from_secs(5),
+                        "Intro".into(),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+        let (mut store, _, _) = Store::open(db.clone()).unwrap();
+        store.save(&data).unwrap();
+        store
+            .connection
+            .execute_batch("ALTER TABLE track_grids DROP COLUMN locked; PRAGMA user_version=18")
+            .unwrap();
+        drop(store);
+
+        let worker = Worker::start(db.clone()).unwrap();
+        let Event::Loaded(Ok(loaded)) = worker.events.recv().unwrap() else {
+            panic!("expected migrated catalog")
+        };
+        assert_eq!(loaded.library.grid(&path), Some(slow));
+        worker
+            .commit_prepare_grid(7, &path, Some(slow), fast)
+            .unwrap();
+        assert!(worker
+            .commit_prepare_grid(7, &path, Some(slow), slow)
+            .is_err());
+        assert!(worker
+            .commit_prepare_grid(7, &dir.path().join("other.wav"), Some(fast), slow)
+            .is_err());
+        worker.set_prepare_grid_lock(7, &path, fast, true).unwrap();
+        assert!(worker
+            .commit_prepare_grid(7, &path, Some(fast.with_locked(true)), slow)
+            .is_err());
+        worker.close_delta(None).unwrap();
+        let (store, mut restored, _) = Store::open(db.clone()).unwrap();
+        assert_eq!(restored.grid(&path), Some(fast.with_locked(true)));
+        assert!(restored.set_grid(&path, None).is_err());
+        assert!(restored.set_grid(&path, Some(slow)).is_err());
+        assert_eq!(restored.hot_cues(&path), data.tracks[0].hot_cues);
+        assert_eq!(restored.saved_loops(&path), data.tracks[0].saved_loops);
+        drop(store);
+        let worker = Worker::start(db.clone()).unwrap();
+        assert!(matches!(
+            worker.events.recv().unwrap(),
+            Event::Loaded(Ok(_))
+        ));
+        worker
+            .set_prepare_grid_lock(7, &path, fast.with_locked(true), false)
+            .unwrap();
+        worker.close_delta(None).unwrap();
+        let (_, restored, _) = Store::open(db).unwrap();
+        assert_eq!(restored.grid(&path), Some(fast));
+    }
+
+    #[test]
+    fn prepare_tempo_first_grid_is_inserted_once_and_complex_grid_survives_all_edits() {
+        use crate::beatgrid::{BeatGrid, TempoComparison};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("library.sqlite3");
+        let path = dir.path().join("track.wav");
+        let other_path = dir.path().join("complex.wav");
+        let mut data = catalog(path.clone(), 7);
+        data.tracks.extend(catalog(other_path.clone(), 8).tracks);
+        let anchor = Duration::from_secs(1);
+        let simple = BeatGrid::new(85., anchor).unwrap();
+        let complex = simple
+            .with_time_signature_change(2, 3, 4)
+            .unwrap()
+            .with_tempo_change(4, 140.)
+            .unwrap()
+            .with_warp_marker(8, Duration::from_secs(5))
+            .unwrap();
+        data.tracks[1].grid = Some(complex);
+        let (mut store, _, _) = Store::open(db.clone()).unwrap();
+        store.save(&data).unwrap();
+        drop(store);
+        let worker = Worker::start(db.clone()).unwrap();
+        assert!(matches!(
+            worker.events.recv().unwrap(),
+            Event::Loaded(Ok(_))
+        ));
+        worker.commit_prepare_grid(7, &path, None, simple).unwrap();
+        assert!(worker.commit_prepare_grid(7, &path, None, simple).is_err());
+        let preview = TempoComparison::new(Some(complex), 0., anchor)
+            .unwrap()
+            .preview(2.)
+            .unwrap();
+        assert!(worker
+            .commit_prepare_grid(8, &other_path, Some(complex), preview)
+            .is_err());
+        worker
+            .set_prepare_grid_lock(8, &other_path, complex, true)
+            .unwrap();
+        worker.close_delta(None).unwrap();
+        let (_, restored, _) = Store::open(db).unwrap();
+        assert_eq!(restored.grid(&path), Some(simple));
+        assert_eq!(restored.grid(&other_path), Some(complex.with_locked(true)));
+    }
+
+    #[test]
+    fn prepare_tempo_failed_write_and_cancel_preserve_previous_committed_value() {
+        use crate::beatgrid::{BeatGrid, TempoComparison};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("library.sqlite3");
+        let path = dir.path().join("track.wav");
+        let anchor = Duration::from_secs(1);
+        let fast = BeatGrid::new(170., anchor).unwrap();
+        let mut data = catalog(path.clone(), 7);
+        data.tracks[0].grid = Some(fast);
+        let (mut store, _, _) = Store::open(db.clone()).unwrap();
+        store.save(&data).unwrap();
+        store.connection.execute_batch("CREATE TRIGGER reject_prepare BEFORE UPDATE ON track_grids BEGIN SELECT RAISE(ABORT,'simulated write failure'); END;").unwrap();
+        drop(store);
+        let worker = Worker::start(db.clone()).unwrap();
+        assert!(matches!(
+            worker.events.recv().unwrap(),
+            Event::Loaded(Ok(_))
+        ));
+        let preview = TempoComparison::new(Some(fast), 170., anchor).unwrap();
+        let slow = preview.preview(0.5).unwrap();
+        let err = worker
+            .commit_prepare_grid(7, &path, Some(fast), slow)
+            .unwrap_err();
+        assert!(err.contains("simulated write failure"), "{err}");
+        // Subsequent previews, including a cancelled selection, never enqueue a write.
+        assert_eq!(preview.preview(0.5).unwrap().bpm(), 85.);
+        worker.close_delta(None).unwrap();
+        let (_, restored, _) = Store::open(db).unwrap();
+        assert_eq!(restored.grid(&path), Some(fast));
+    }
+
     fn rows(store: &Store) -> Vec<i32> {
         inspect(&store.connection)
             .unwrap()

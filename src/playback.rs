@@ -1,7 +1,10 @@
 //! Control-plane loading and two Rodio decks. Rodio itself is not lock-free.
+mod preview_clip;
+pub(crate) mod tempo_preview;
 use crate::deck_render::{DeckRenderer, RenderControl, RenderFormat, SeekFrame};
 use crate::looping::{frame_at, frame_time, FrameLoop, PcmSource};
 use crate::playback_speed::PlaybackSpeed;
+pub(crate) use preview_clip::{PreviewClip, PREVIEW_DURATION};
 use rodio::{mixer::Mixer, Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 use std::{
     cell::{Cell, RefCell},
@@ -142,6 +145,34 @@ impl PreparedTrack {
     }
 }
 
+fn open_pcm_decoder(
+    path: &Path,
+) -> Result<Decoder<std::io::BufReader<crate::media_input::AudioWindow>>, String> {
+    let decode = |window: crate::media_input::AudioWindow| {
+        let len = window.len();
+        Decoder::builder()
+            .with_data(std::io::BufReader::new(window))
+            .with_byte_len(len)
+            .with_seekable(true)
+            .build()
+    };
+    let source = crate::media_input::AudioWindow::whole(path).map_err(|e| e.to_string())?;
+    decode(source)
+        .map_err(|e| e.to_string())
+        .or_else(|original| {
+            let recovered = match crate::media_input::recovery_source(path) {
+                Ok(source) => source,
+                Err(symphonia::core::errors::Error::Unsupported(
+                    "original parser accepted source",
+                )) => {
+                    return Err(original);
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            decode(recovered).map_err(|e| e.to_string())
+        })
+}
+
 pub(crate) fn decode_pcm(
     path: &Path,
     limit: usize,
@@ -155,28 +186,7 @@ pub(crate) fn decode_pcm(
     let (channels, rate, samples) = if crate::opus_audio::is_opus(&canonical)? {
         crate::opus_audio::decode(&canonical, limit, cancel)?
     } else {
-        let decode = |source: crate::media_input::AudioWindow| {
-            let len = source.len();
-            Decoder::builder()
-                .with_data(std::io::BufReader::new(source))
-                .with_byte_len(len)
-                .with_seekable(true)
-                .build()
-        };
-        let source =
-            crate::media_input::AudioWindow::whole(&canonical).map_err(|e| e.to_string())?;
-        let decoder = decode(source)
-            .map_err(|e| e.to_string())
-            .or_else(|original| {
-                let source = match crate::media_input::recovery_source(&canonical) {
-                    Ok(source) => source,
-                    Err(symphonia::core::errors::Error::Unsupported(
-                        "original parser accepted source",
-                    )) => return Err(original),
-                    Err(error) => return Err(error.to_string()),
-                };
-                decode(source).map_err(|e| e.to_string())
-            })?;
+        let decoder = open_pcm_decoder(&canonical)?;
         let channels = decoder.channels();
         let rate = decoder.sample_rate();
         if channels == 0 || rate == 0 {
@@ -381,6 +391,7 @@ impl DeckSnapshot {
 }
 
 pub struct DualDeckEngine {
+    tempo_preview: Arc<tempo_preview::PreviewControl>,
     sampler: Arc<crate::sampler::Shared>,
     decks: [RefCell<Deck>; 2],
     levels: Cell<MixerLevels>,
@@ -603,11 +614,13 @@ impl DualDeckEngine {
             ));
             input
         });
-        mixer.add(bus);
+        let (preview_renderer, tempo_preview) = tempo_preview::PreviewRenderer::new();
+        mixer.add(bus.with_tempo_preview(preview_renderer));
         // Ungeladene Decks benötigen keine leere Rodio-Queue im Audio-Mixer.
         // Beim Laden installiert replace_source die echte, dauerhaft stille EOF-Quelle.
         let decks = std::array::from_fn(|_| RefCell::new(Deck::empty()));
         let engine = Self {
+            tempo_preview,
             sampler,
             decks,
             levels: Cell::new(MixerLevels::default()),
@@ -729,6 +742,9 @@ impl DualDeckEngine {
                 || self.monitor_settings.get().split)
         {
             return Err("Disable headphone cue before loading multichannel audio".into());
+        }
+        if track.samples.channels() > 2 {
+            self.stop_tempo_preview();
         }
         let source = track.samples.clone();
         self.replace_source(id, track, source, Duration::ZERO, false, None);
@@ -1432,7 +1448,44 @@ impl DualDeckEngine {
         self.output_routing.pair()
     }
     pub fn set_output_pair(&self, pair: u16) -> Result<(), String> {
-        self.output_routing.set_pair(pair)
+        self.output_routing.set_pair(pair)?;
+        if pair == 1 {
+            self.stop_tempo_preview();
+        }
+        Ok(())
+    }
+
+    /// The preview uses physical outputs 3/4 only while they are available to headphones.
+    pub(crate) fn preview_route_available(&self) -> bool {
+        !self.output_failed()
+            && self.output_channels >= 4
+            && self.output_pair() != 1
+            && self.decks.iter().all(|d| {
+                d.borrow()
+                    .track
+                    .as_ref()
+                    .is_none_or(|t| t.samples.channels() <= 2)
+            })
+    }
+
+    /// Restart the selected excerpt at its original speed without issuing a deck command.
+    pub(crate) fn play_tempo_preview(
+        &self,
+        clip: &PreviewClip,
+        grid: crate::beatgrid::BeatGrid,
+    ) -> Result<(), String> {
+        if !self.preview_route_available() {
+            return Err(
+                "Visual comparison only: a separate headphone pair (3/4) is required.".into(),
+            );
+        }
+        let voice = tempo_preview::Voice::new(clip, grid, self.output_rate)?;
+        self.tempo_preview.start(voice);
+        Ok(())
+    }
+
+    pub(crate) fn stop_tempo_preview(&self) {
+        self.tempo_preview.stop();
     }
     pub fn rendered_frames(&self) -> u64 {
         self.render_clock.completed.load(Ordering::Acquire)
@@ -5316,6 +5369,7 @@ mod tests {
 
     mod ai_provider_performance;
     mod render_bench;
+    mod tempo_preview;
 
     fn compare_render_load(mut command: std::process::Command, unit: &str) {
         use std::process::Child;

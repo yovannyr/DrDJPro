@@ -1,5 +1,6 @@
 //! GUI control plane with injectable file selection and one bounded load worker.
 mod itunes;
+mod tempo_comparison;
 use crate::{
     playback::{DeckId, DualDeckEngine, LoopEdge, MixerLevels, PreparedTrack},
     AppWindow,
@@ -325,6 +326,8 @@ impl SearchWorker {
 }
 
 pub struct AudioController {
+    comparison: RefCell<Option<tempo_comparison::Comparison>>,
+    preview_job: RefCell<Option<tempo_comparison::PreviewJob>>,
     covers: Rc<RefCell<crate::cover_cache::CoverCache>>,
     cover_visible: Rc<Cell<bool>>,
     device_opener: DeviceOpener,
@@ -433,6 +436,7 @@ pub struct AudioController {
 }
 impl Drop for AudioController {
     fn drop(&mut self) {
+        self.close_comparison();
         for id in [DeckId::A, DeckId::B] {
             if let Err(error) = self.cancel_temporary_hold(id) {
                 eprintln!("Could not release temporary CUE: {error}");
@@ -535,6 +539,8 @@ impl AudioController {
             picker,
             library_picker,
             library_folder_picker: RefCell::new(None),
+            comparison: RefCell::default(),
+            preview_job: RefCell::default(),
             library: Rc::new(RefCell::new(crate::library::Library::default())),
             library_generation: Rc::new(Cell::new(0)),
             library_page: Cell::new(0),
@@ -1278,6 +1284,7 @@ impl AudioController {
         controller.apply_levels();
         controller.wire_crates(ui);
         controller.wire_grid_editor(ui);
+        controller.wire_tempo_comparison(ui);
         controller.wire_hot_cues(ui);
         controller.wire_loops(ui);
         controller.wire_pitch(ui);
@@ -4597,6 +4604,14 @@ impl AudioController {
             .path
             .ok_or("Load a track before editing its grid")?;
         let source = snapshot.detail.ok_or("Track waveform is unavailable")?;
+        if self
+            .library
+            .borrow()
+            .grid(&path)
+            .is_some_and(|grid| grid.is_locked())
+        {
+            return Err("Beatgrid is locked; unlock it in Prepare".into());
+        }
         let ui = self.ui.upgrade().ok_or("Window closed")?;
         let seed = match id {
             DeckId::A => ui.get_left_grid_bpm(),
@@ -7079,6 +7094,7 @@ impl AudioController {
         }
     }
     pub fn tick(&self) {
+        self.poll_tempo_comparison();
         if self.covers.borrow_mut().poll() {
             if let Some(ui) = self.ui.upgrade() {
                 let rows = ui.get_library_rows();
@@ -9402,6 +9418,10 @@ mod dvs_tests {
 }
 #[cfg(test)]
 mod tests {
+    mod prepare_tempo_workflow {
+        use super::*;
+        include!("controller/tempo_comparison_tests.rs");
+    }
     #[test]
     fn hid_relative_pitch_accumulates_pending_requests_before_ui_refresh_and_clamps_each_step() {
         i_slint_backend_testing::init_no_event_loop();

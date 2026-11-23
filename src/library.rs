@@ -1035,8 +1035,30 @@ impl Library {
             .get(&identity(path))
             .ok_or("Track is not in the library")?;
         let index = *index;
+        if self.tracks[index]
+            .grid
+            .is_some_and(|saved| saved.is_locked())
+            && self.tracks[index].grid != grid
+        {
+            return Err("Beatgrid is locked; unlock it in Prepare".into());
+        }
         self.tracks[index].grid = grid;
         self.mark_track(index);
+        Ok(())
+    }
+    /// Reflect an explicitly saved change of the grid lock in the catalog.
+    pub fn set_grid_locked(&mut self, path: &Path, locked: bool) -> Result<(), String> {
+        let index = *self
+            .keys
+            .get(&identity(path))
+            .ok_or("Track is not in the library")?;
+        let grid = self.tracks[index]
+            .grid
+            .ok_or("Save a beatgrid before locking it")?;
+        if grid.is_locked() != locked {
+            self.tracks[index].grid = Some(grid.with_locked(locked));
+            self.mark_track(index);
+        }
         Ok(())
     }
     pub fn crates(&self) -> &crate::crates::CrateCatalog {

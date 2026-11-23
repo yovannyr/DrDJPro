@@ -2,8 +2,8 @@
 import "layout-fonts/LiberationSans-Regular.ttf";
 import "layout-fonts/LiberationSans-Bold.ttf";
 import "layout-fonts/LiberationMono-Regular.ttf";
-import { DjTheme, LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, LibraryRow, TableColumn, DeckView, SamplerRow, DeckSlotData } from "theme.slint";
-export { LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, LibraryRow, TableColumn, DeckView, SamplerRow, DeckSlotData } from "theme.slint";
+import { DjTheme, LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, TempoComparisonView, LibraryRow, TableColumn, DeckView, SamplerRow, DeckSlotData } from "theme.slint";
+export { LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, TempoComparisonView, LibraryRow, TableColumn, DeckView, SamplerRow, DeckSlotData } from "theme.slint";
 export { RemoteDisplayWindow } from "remote-display.slint";
 export { WebBrowserWindow } from "web_view.slint";
 export { ItunesWindow,ItunesRow } from "itunes.slint";
@@ -721,6 +721,19 @@ export component AppWindow inherits Window {
 
     in property <[LibraryRow]> library-rows;
     in-out property <int> library-tab;
+    in property <TempoComparisonView> tempo-comparison;
+    callback open-tempo-comparison();
+    callback select-tempo-variant(bool);
+    callback apply-tempo-comparison();
+    callback cancel-tempo-comparison();
+    callback toggle-tempo-grid-lock();
+    private property <bool> prepare-visible: root.library-tab == 4 && !root.settings-open
+        && (root.view-mode == LayoutMode.Classic || root.modern-library-open);
+    private property <bool> tempo-comparison-obsolete: root.tempo-comparison.open
+        && (!root.prepare-visible || root.tempo-comparison.track-id != root.selected-track);
+    changed tempo-comparison-obsolete => {
+        if root.tempo-comparison-obsolete { root.cancel-tempo-comparison(); }
+    }
     callback analyze-library();
     callback add-phrase-cues();
     callback suggest-track(bool);
@@ -1255,6 +1268,12 @@ Rectangle {
             sort-field: root.table-sort-field; sort-descending: root.table-sort-descending; columns-enabled: root.table-columns-enabled;
             change-column(id, action) => { root.change-table-column(id, action); }
             analysis-title: root.analysis-title; analysis-summary: root.analysis-summary; analysis-waveform: root.analysis-waveform;
+            tempo-comparison: root.tempo-comparison;
+            open-tempo-comparison => { root.open-tempo-comparison(); }
+            select-tempo-variant(fast) => { root.select-tempo-variant(fast); }
+            apply-tempo-comparison => { root.apply-tempo-comparison(); }
+            cancel-tempo-comparison => { root.cancel-tempo-comparison(); }
+            toggle-tempo-grid-lock => { root.toggle-tempo-grid-lock(); }
             analysis-progress: root.analysis-progress;
             analysis-running: root.analysis-running;
             can-analyze: root.library-has-analysis-targets && !root.loading && !root.library-busy;

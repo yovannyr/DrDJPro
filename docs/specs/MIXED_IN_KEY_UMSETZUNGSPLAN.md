@@ -1,6 +1,11 @@
 # Umsetzungsplan für 35 Ideen aus der Mixed-In-Key-Recherche
 
-**Stand 23. November 2026. Status: geplant.** Zuerst den [85/170-BPM-Vergleich in Prepare](3-bpm-detection/spec.md#d04) umsetzen. Die Tabelle legt die Reihenfolge bis zum letzten Arbeitspaket fest. Zu jeder Idee gehören eine federführende Spec, eine Anforderung und ein überprüfbarer Abnahmepunkt. Entwicklung, Laufzeitmessungen und Hörabnahmen stehen aus.
+**Stand 23. November 2026.** Die Tabelle legt die Reihenfolge bis zum letzten Arbeitspaket fest. Zu jeder Idee gehören eine federführende Spec, eine Anforderung und ein überprüfbarer Abnahmepunkt.
+
+| Rang | Umsetzungsstand | Gemeinsame Abnahme |
+| ---: | --- | --- |
+| 1 · D04 | 85/170-BPM-Vergleich in Prepare umgesetzt. Signal-, Speicher-, UI- und Lasttests unter Windows bestanden. [Prüfbericht und Messwerte](3-bpm-detection/D04_ABNAHME.md) | Kopfhörer, Master und Bedienung am Gerät |
+| 2–35 | Offen | Nach der Umsetzung |
 
 ## Einstieg mit 85 oder 170 BPM
 
@@ -94,4 +99,4 @@ P1 deckt zuerst die tägliche Arbeit am Deck und in der Library sowie die zu qua
 - **Signal und Gehör.** Bei Vorhöroptionen die Master- und Kopfhörersignale unabhängig auswerten. Der Vergleich muss auf denselben Audioframes und mit definierten Pegeln erfolgen. Die Prüfung am realen Ausgang und am MC4000 wird als eigene Hör-/Bedienprobe dokumentiert.
 - **Musikalische Nachweise.** Für Erkennung und Ranking synthetische Sollwerte und einen getrennten, manuell annotierten Prüfsatz einsetzen. Je nach Funktion Tempo-Deutung, Zeitgrenzen, unbestimmte Passagen, Fehlalarme und Genre ausweisen. Die Referenzen und das Erfolgskriterium für die zu bewertende reale Sammlung vor der Messung festlegen. Neue Ergebnisse zu Herstellerprodukten oder Trefferquoten werden aus den Webseiten nicht abgeleitet.
 - **Platz und Datenbestand.** Bestehende Musikdateien, Cues, Grids und Benutzerkorrekturen schützen. Vorschauen und Zwischendaten bei Bedarf und mit einem dokumentierten Limit erzeugen. Für Paket- und Rendering-Slices Dateigröße, Spitzenbedarf, Verhalten bei vollem Laufwerk und Aufräumen nach Abbruch prüfen. Bei neuen persistenten Daten sind Altbestand, Neustart und erneuter Versuch Teil der Abnahme.
-- **Freigabe pro Idee.** Erst die im verlinkten AC genannten positiven und negativen Fälle ablegen, dann ein unabhängiges Review und die für den jeweiligen Pfad erforderlichen Messungen vornehmen. Eine bestandene automatisierte Probe ersetzt keine noch offene Hör-, Geräte- oder musikalische Qualitätsabnahme. Status dieser Planung für alle 35 Einträge: Umsetzung und Abnahme offen.
+- **Freigabe pro Idee.** Für jede Idee die im verlinkten AC genannten positiven und negativen Fälle, das unabhängige Review und die für den jeweiligen Pfad erforderlichen Messungen dokumentieren. Offene Hör-, Geräte- und musikalische Qualitätsprüfungen stehen in der Spalte für die gemeinsame Abnahme.

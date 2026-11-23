@@ -1,5 +1,7 @@
 //! User-defined beatgrid; no automatic beat or tempo detection.
 use std::time::Duration;
+mod tempo_comparison;
+pub use tempo_comparison::TempoComparison;
 pub const MAX_METER_CHANGES: usize = 16;
 pub const MAX_TEMPO_CHANGES: usize = 64;
 pub const MAX_WARP_MARKERS: usize = 64;
@@ -97,6 +99,7 @@ fn validate_bpm(bpm: f64) -> Result<(), String> {
 pub struct BeatGrid {
     bpm: f64,
     anchor: Duration,
+    locked: bool,
     beats_per_bar: u8,
     meter_denominator: u8,
     changes: [MeterChange; MAX_METER_CHANGES],
@@ -125,6 +128,7 @@ impl BeatGrid {
         Ok(Self {
             bpm,
             anchor,
+            locked: false,
             beats_per_bar: 4,
             meter_denominator: 4,
             changes: [EMPTY_METER; MAX_METER_CHANGES],
@@ -490,6 +494,14 @@ impl BeatGrid {
             anchor,
             ..self
         })
+    }
+    /// Whether ordinary grid edits must preserve this saved grid.
+    pub fn is_locked(&self) -> bool {
+        self.locked
+    }
+    pub fn with_locked(mut self, locked: bool) -> Self {
+        self.locked = locked;
+        self
     }
     pub fn beats_per_bar(self) -> u8 {
         self.beats_per_bar

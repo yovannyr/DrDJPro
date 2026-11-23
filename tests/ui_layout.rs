@@ -16,6 +16,129 @@ fn click(ui: &AppWindow, label: &str) {
 }
 
 #[test]
+fn prepare_tempo_comparison_exposes_variants_and_protects_the_grid_in_both_layouts() {
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_library_tab(4);
+        ui.set_selected_track(1);
+        ui.set_audio_enabled(true);
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        let opened = Rc::new(Cell::new(false));
+        let observed = opened.clone();
+        ui.on_open_tempo_comparison(move || observed.set(true));
+        click(&ui, "Compare half and double tempo");
+        assert!(opened.get());
+
+        let mut comparison = TempoComparisonView {
+            open: true,
+            track_id: 1,
+            slow_label: "85 BPM".into(),
+            fast_label: "170 BPM".into(),
+            can_toggle_lock: true,
+            locked: true,
+            status: "Grid locked".into(),
+            anchor_label: "Anchor 1.000 s".into(),
+            beats: Rc::new(slint::VecModel::from(vec![
+                BeatLine {
+                    downbeat: true,
+                    ..Default::default()
+                },
+                BeatLine {
+                    position: 0.5,
+                    ..Default::default()
+                },
+            ]))
+            .into(),
+            ..Default::default()
+        };
+        ui.set_tempo_comparison(comparison.clone());
+        let fast = Rc::new(Cell::new(None));
+        let observed = fast.clone();
+        ui.on_select_tempo_variant(move |value| observed.set(Some(value)));
+        click(&ui, "Faster tempo interpretation");
+        assert_eq!(fast.get(), Some(true));
+        click(&ui, "Slower tempo interpretation");
+        assert_eq!(fast.get(), Some(false));
+        let apply_count = Rc::new(Cell::new(0));
+        let observed = apply_count.clone();
+        ui.on_apply_tempo_comparison(move || observed.set(observed.get() + 1));
+        click(&ui, "Apply tempo interpretation");
+        assert_eq!(apply_count.get(), 0);
+        let lock = Rc::new(Cell::new(false));
+        let observed = lock.clone();
+        ui.on_toggle_tempo_grid_lock(move || observed.set(true));
+        click(&ui, "Toggle tempo grid lock");
+        assert!(lock.get());
+
+        comparison.locked = false;
+        comparison.can_apply = true;
+        comparison.fast_label = "".into();
+        ui.set_tempo_comparison(comparison);
+        click(&ui, "Faster tempo interpretation");
+        assert_eq!(fast.get(), Some(false));
+        click(&ui, "Apply tempo interpretation");
+        assert_eq!(apply_count.get(), 1);
+        let beats = ElementHandle::find_by_accessible_label(&ui, "Tempo comparison beat marks")
+            .next()
+            .unwrap();
+        assert_eq!(
+            beats.accessible_description().as_deref(),
+            Some("Anchor 1.000 s")
+        );
+        let mut marks = beats
+            .query_descendants()
+            .match_type_name("Rectangle")
+            .find_all();
+        marks.sort_by(|a, b| a.absolute_position().x.total_cmp(&b.absolute_position().x));
+        assert_eq!(marks.len(), 2);
+        assert!(marks[0].size().height > marks[1].size().height);
+        assert!((marks[0].absolute_position().x - beats.absolute_position().x).abs() < 1.);
+        let middle = beats.absolute_position().x + beats.size().width * 0.5;
+        assert!((marks[1].absolute_position().x - middle).abs() <= 1.);
+    }
+}
+
+#[test]
+fn prepare_tempo_comparison_cancels_when_the_user_leaves_the_preview() {
+    i_slint_backend_testing::init_no_event_loop();
+    let ui = AppWindow::new().unwrap();
+    ui.set_audio_enabled(true);
+    ui.set_view_mode(LayoutMode::Modern);
+    ui.show().unwrap();
+    let cancellations = Rc::new(Cell::new(0));
+    let observed = cancellations.clone();
+    let weak = ui.as_weak();
+    ui.on_cancel_tempo_comparison(move || {
+        observed.set(observed.get() + 1);
+        weak.unwrap().set_tempo_comparison(Default::default());
+    });
+    for exit in 0..5 {
+        ui.set_library_tab(4);
+        ui.set_selected_track(1);
+        ui.set_modern_library_open(true);
+        slint::platform::update_timers_and_animations();
+        ui.set_tempo_comparison(TempoComparisonView {
+            open: true,
+            track_id: 1,
+            ..Default::default()
+        });
+        match exit {
+            0 => click(&ui, "Cancel tempo comparison"),
+            1 => ui.set_library_tab(0),
+            2 => ui.set_modern_library_open(false),
+            3 => ui.set_selected_track(2),
+            _ => click(&ui, "Open settings"),
+        }
+        slint::platform::update_timers_and_animations();
+        assert_eq!(cancellations.get(), exit + 1);
+        assert!(!ui.get_tempo_comparison().open);
+    }
+}
+
+#[test]
 fn settings_routes_preserve_playback_and_keep_live_shortcuts_out_of_setup() {
     use slint::platform::{Key, WindowEvent};
     i_slint_backend_testing::init_no_event_loop();

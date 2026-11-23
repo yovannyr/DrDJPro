@@ -1,6 +1,6 @@
 // Generated with the full local GUI input; input handlers are retained.
 import { Button, Slider, SpinBox, LineEdit, ListView, ComboBox, CheckBox } from "std-widgets.slint";
-import { DjTheme, DeckSlotData, LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, LibraryRow, TableColumn, DeckView, SamplerRow } from "theme.slint";
+import { DjTheme, DeckSlotData, LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, TempoComparisonView, LibraryRow, TableColumn, DeckView, SamplerRow } from "theme.slint";
 import { LibraryButton } from "controls.slint";
 
 export component CratePanel inherits Rectangle {
@@ -74,6 +74,72 @@ export component CratePanel inherits Rectangle {
     }
 }
 
+component TempoComparisonPanel inherits VerticalLayout {
+    in property <TempoComparisonView> comparison;
+    callback select-variant(bool);
+    callback apply-comparison();
+    callback toggle-lock();
+    callback cancel-comparison();
+    spacing: 2px;
+    HorizontalLayout {
+        spacing: 3px;
+        LibraryButton {
+            text: root.comparison.slow-label == "" ? "Slower" : root.comparison.slow-label;
+            enabled: root.comparison.slow-label != "";
+            active: self.enabled && !root.comparison.selected-fast;
+            accessible-label: "Slower tempo interpretation";
+            accessible-description: self.text + (self.active ? " (selected)" : "");
+            clicked => { root.select-variant(false); }
+        }
+        LibraryButton {
+            text: root.comparison.fast-label == "" ? "Faster" : root.comparison.fast-label;
+            enabled: root.comparison.fast-label != "";
+            active: self.enabled && root.comparison.selected-fast;
+            accessible-label: "Faster tempo interpretation";
+            accessible-description: self.text + (self.active ? " (selected)" : "");
+            clicked => { root.select-variant(true); }
+        }
+        LibraryButton {
+            text: "Apply grid"; enabled: root.comparison.can-apply;
+            accessible-label: "Apply tempo interpretation";
+            clicked => { root.apply-comparison(); }
+        }
+        LibraryButton {
+            text: root.comparison.locked ? "Unlock grid" : "Lock grid";
+            enabled: root.comparison.can-toggle-lock;
+            accessible-label: "Toggle tempo grid lock"; accessible-description: self.text;
+            clicked => { root.toggle-lock(); }
+        }
+        LibraryButton {
+            text: "Cancel"; accessible-label: "Cancel tempo comparison";
+            clicked => { root.cancel-comparison(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    Rectangle {
+        height: 16px; clip: true; background: #101418;
+        accessible-role: groupbox; accessible-label: "Tempo comparison beat marks";
+        accessible-description: root.comparison.anchor-label;
+        for marker in root.comparison.beats : Rectangle {
+            x: marker.position * (parent.width - self.width);
+            y: parent.height - self.height;
+            width: marker.downbeat ? 3px : 1px;
+            height: marker.downbeat ? parent.height : parent.height / 2;
+            background: marker.downbeat ? #ffbf00 : #91b2bf;
+        }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: root.comparison.anchor-label; color: #eeeeee; font-size: 11px; }
+        Text {
+            text: root.comparison.status; color: #dddddd; font-size: 11px;
+            accessible-role: text; accessible-label: "Tempo comparison status";
+            accessible-description: self.text;
+            min-width: 0px; horizontal-stretch: 1; wrap: word-wrap;
+        }
+    }
+}
+
 export component TrackLibrary inherits Rectangle {
     in property <int> prep-queue-count;
     callback prep-action(int);
@@ -101,6 +167,12 @@ export component TrackLibrary inherits Rectangle {
     callback change-column(int, int);
     callback analyze();
     callback add-phrase-cues();
+    in property <TempoComparisonView> tempo-comparison;
+    callback open-tempo-comparison();
+    callback select-tempo-variant(bool);
+    callback apply-tempo-comparison();
+    callback cancel-tempo-comparison();
+    callback toggle-tempo-grid-lock();
     callback suggest-track(bool);
     in property <bool> assistant-enabled;
     in property <bool> assistant-running;
@@ -196,9 +268,21 @@ export component TrackLibrary inherits Rectangle {
                 if root.assistant-enabled : LibraryButton { text: "Similar"; accessible-label: "Suggest a similar track"; enabled: !root.busy && !root.assistant-running && root.selection > 0; clicked => { root.suggest-track(false); } }
                 if root.assistant-enabled : LibraryButton { text: "Transition"; accessible-label: "Suggest next track and transition"; enabled: !root.busy && !root.assistant-running && root.selection > 0; clicked => { root.suggest-track(true); } }
                 LibraryButton { text: "Add phrase cues"; accessible-label: "Add suggested phrase cues to empty slots"; enabled: !root.busy && root.selection > 0 && root.analysis-waveform.length > 0; clicked => { root.add-phrase-cues(); } }
+                if !root.tempo-comparison.open : LibraryButton {
+                    text: "Compare BPM"; accessible-label: "Compare half and double tempo";
+                    enabled: root.selection > 0;
+                    clicked => { root.open-tempo-comparison(); }
+                }
                 Text { horizontal-stretch: 1; vertical-alignment: center; text: root.analysis-title; font-size: 11px; color: #eeeeee; overflow: elide; }
             }
             Text { height: 14px; text: root.analysis-summary; accessible-role: text; accessible-label: "Prepare analysis results"; accessible-description: root.analysis-summary; font-size: 11px; color: #cccccc; overflow: elide; }
+            if root.tempo-comparison.open : TempoComparisonPanel {
+                comparison: root.tempo-comparison;
+                select-variant(fast) => { root.select-tempo-variant(fast); }
+                apply-comparison => { root.apply-tempo-comparison(); }
+                cancel-comparison => { root.cancel-tempo-comparison(); }
+                toggle-lock => { root.toggle-tempo-grid-lock(); }
+            }
             if root.analysis-waveform.length > 0 : Rectangle {
                 height: 20px; background: #0a0a0a;
                 for peak[index] in root.analysis-waveform : Rectangle {

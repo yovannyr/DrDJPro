@@ -13,6 +13,7 @@ pub fn track() -> TrackMessage {
         analysis_hash: "sha256".into(),
         tempo: f32::from_bits(0x3f812345),
         beat_grid: Some(BeatGridMessage {
+            locked: None,
             bpm: 128.1234567890123,
             anchor_ns: 123_456_789,
             beats_per_bar: 4,

@@ -104,6 +104,8 @@ impl RoutingControl {
 }
 pub struct PairRouter<S> {
     source: S,
+    preview: Option<crate::playback::tempo_preview::PreviewRenderer>,
+    preview_frame: [f32; 2],
     control: Arc<RoutingControl>,
     channel: u16,
     pair: u16,
@@ -130,6 +132,8 @@ impl<S: Source> PairRouter<S> {
         (
             Self {
                 source,
+                preview: None,
+                preview_frame: [0.; 2],
                 control: Arc::clone(&control),
                 channel: 0,
                 pair: 0,
@@ -147,6 +151,14 @@ impl<S: Source> PairRouter<S> {
             control,
         )
     }
+
+    pub(crate) fn with_tempo_preview(
+        mut self,
+        preview: crate::playback::tempo_preview::PreviewRenderer,
+    ) -> Self {
+        self.preview = Some(preview);
+        self
+    }
 }
 impl<S: Source> Iterator for PairRouter<S> {
     type Item = f32;
@@ -156,6 +168,11 @@ impl<S: Source> Iterator for PairRouter<S> {
             let was_monitoring = self.cue || self.monitor_tail;
             let state = self.control.requested.load(Ordering::Acquire);
             self.pair = state as u16;
+            if self.control.channels >= 4 && self.pair != 1 {
+                if let Some(preview) = &mut self.preview {
+                    self.preview_frame = preview.frame();
+                }
+            }
             self.cue = state & (1 << 16) != 0;
             let target = MonitorSettings::from_bits(self.control.monitor.load(Ordering::Acquire));
             if target != self.target {
@@ -222,6 +239,24 @@ impl<S: Source> Iterator for PairRouter<S> {
         } else {
             0.
         };
+        // Use the same physical pair snapshot as the master for the whole frame.
+        // A reroute onto 3/4 can never turn a headphone-only sample into master audio.
+        let output =
+            if self.pair != 1 && self.control.channels >= 4 && matches!(self.channel, 2 | 3) {
+                let lane = usize::from(self.channel - 2);
+                let cue = self.preview_frame[lane];
+                let split = if lane == 0 {
+                    (self.preview_frame[0] + self.preview_frame[1]) * 0.5
+                } else {
+                    0.
+                };
+                output
+                    + self.monitor.gain
+                        * (1. - self.monitor.mix)
+                        * (cue + self.split_blend * (split - cue))
+            } else {
+                output
+            };
         self.channel = (self.channel + 1) % self.control.channels;
         Some(output)
     }

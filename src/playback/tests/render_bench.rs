@@ -5,12 +5,22 @@ use std::time::Instant;
 /// Measures render overruns, end-to-end deadline misses, invalid output blocks and heap allocations.
 pub(super) fn measure(
     seconds: u64,
+    check_load: impl FnMut() + Send,
+) -> (usize, usize, usize, usize) {
+    measure_routed(seconds, 1, |_| {}, check_load, None)
+}
+
+pub(super) fn measure_routed(
+    seconds: u64,
+    channels: u16,
+    setup: impl FnOnce(&DualDeckEngine) + Send,
     mut check_load: impl FnMut() + Send,
+    headphone_signal: Option<bool>,
 ) -> (usize, usize, usize, usize) {
     let period = Duration::from_millis(10);
-    let mut measure = move || {
-        let (mixer, mut sink) = rodio::mixer::mixer(1, 48_000);
-        let engine = DualDeckEngine::from_mixer(mixer, 1, 48_000);
+    let measure = move || {
+        let (mixer, mut sink) = rodio::mixer::mixer(channels, 48_000);
+        let engine = DualDeckEngine::from_mixer(mixer, channels, 48_000);
         let left = wav_file(8192, 96_000);
         let right = wav_file(-4096, 96_000);
         engine.load_a(left.path()).unwrap();
@@ -26,8 +36,13 @@ pub(super) fn measure(
             engine.activate_loop(deck).unwrap();
             engine.play(deck);
         }
-        sink.by_ref().take(480).for_each(drop);
-        let mut frames = [0.0; 480];
+        setup(&engine);
+        let channels = usize::from(channels);
+        let warmup_blocks = if headphone_signal.is_some() { 100 } else { 1 };
+        sink.by_ref()
+            .take(480 * channels * warmup_blocks)
+            .for_each(drop);
+        let mut frames = vec![0.0; 480 * channels];
         let mut render = Vec::with_capacity(seconds as usize * 100);
         let mut dispatch = Vec::with_capacity(render.capacity());
         let mut allocations = 0;
@@ -55,11 +70,19 @@ pub(super) fn measure(
             overruns += usize::from(elapsed > period);
             deadline_misses += usize::from(entered + elapsed > due + period);
             allocations += heap.allocations;
-            gaps += usize::from(
+            let bad_output = frames.chunks_exact(channels).any(|frame| {
+                frame.iter().any(|s| !s.is_finite())
+                    || frame[..channels.min(2)]
+                        .iter()
+                        .any(|s| (s - 0.0625).abs() >= 1e-5)
+            });
+            let bad_headphones = headphone_signal.is_some_and(|active| {
                 frames
-                    .iter()
-                    .any(|sample| (sample - 0.0625).abs() >= 1e-5 || !sample.is_finite()),
-            );
+                    .chunks_exact(channels)
+                    .any(|frame| frame[2..4].iter().any(|s| s.abs() > 0.001))
+                    != active
+            });
+            gaps += usize::from(bad_output || bad_headphones);
         }
         render.sort_unstable();
         dispatch.sort_unstable();

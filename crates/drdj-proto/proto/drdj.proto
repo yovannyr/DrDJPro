@@ -48,6 +48,7 @@ message BeatGridMessage {
   repeated TempoChangeMessage tempo_changes = 6;
   repeated MeterChangeMessage meter_changes = 7;
   repeated BeatPointMessage points = 8;
+  optional bool locked = 9;
 }
 message LoopMessage {
   required uint32 start_bar = 1;
