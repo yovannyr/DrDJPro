@@ -23,13 +23,22 @@ The Settings integration test completed its six interactions in 733 ms and 701 m
 
 With a loopback server deliberately withholding headers or the remainder of a stream, the peer observed the cancelled connection close after 16.4 ms and 15.5 ms respectively. In each test the same worker completed the next request. These measurements cover an established socket. The operating system's DNS resolver can finish a lookup independently.
 
+### Manual provider checks, 23 November 2026
+
+The user confirmed both results in Dr. DJ Pro.
+
+| Manual check | Result |
+| --- | --- |
+| OpenAI-compatible provider with an API key | Passed. The provider connection test succeeded. |
+| ChatGPT account via **Continue with ChatGPT** | Passed. The workspace initially blocked ChatGPT plan use for open-source apps. After the administrator setting was changed, the user retried and signed in successfully. |
+
 ### Transport design decision
 
 The original design called for blocking reqwest throughout. The blocking API can keep a worker occupied for up to 30 seconds after cancellation while a server withholds its response. Provider HTTP and OAuth therefore drive reqwest's asynchronous socket operations on a current-thread Tokio executor owned by the provider worker. Tokio was already part of reqwest's dependency tree. Requests share that executor across successful calls. Cancellation drops the pending I/O and discards the executor so parked connections close promptly. The Slint event loop, audio render callback and synchronous provider-facing API keep their existing execution model.
 
-### Remaining native checks
+### Automated test scope and remaining checks
 
 - The six-action UI test begins in the AI tab. Its HTTP server is local, verifies the API key header and returns a fixture response. In an actual cloud setup the user must also enable cloud access. Human input time, billing, geographic eligibility and provider latency depend on the user's setup.
 - The native restart probe uses the operating system's credential service and cleans up its test entry. The regular unit suite also exercises a locked/unavailable store. The CI workflow explicitly invokes the native probe on Windows, macOS and Linux with a disposable Secret Service session.
-- The desktop tests use simulated input and the audio benchmark drives the real application mixer with generated samples. A physical controller, human listening and user-owned provider accounts require separate acceptance.
-- No API key or subscription belonging to a user is required for this suite. A live sign-in and a model invocation billed to a real account have separate acceptance status from the OAuth protocol tests.
+- The desktop tests use simulated input and the audio benchmark drives the real application mixer with generated samples. Physical controller and listening tests remain separate.
+- The automated suite uses test credentials. A model request charged to the user's ChatGPT plan remains unverified.
