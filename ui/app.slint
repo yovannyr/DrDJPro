@@ -20,6 +20,8 @@ import { CompactDeck, DeckPlaceholder } from "deck.slint";
 import { CratePanel, TrackLibrary } from "library.slint";
 import { ImportReviewRow } from "import-review.slint";
 export { ImportReviewRow } from "import-review.slint";
+import { MetadataDiagnosisView } from "metadata-diagnosis.slint";
+export { MetadataDiagnosisView } from "metadata-diagnosis.slint";
 import { EqStrip, FxStrip } from "editors.slint";
 
 import { Button, Slider, SpinBox, LineEdit, ListView, ComboBox, CheckBox, Palette, TextEdit } from "std-widgets.slint";
@@ -293,7 +295,7 @@ export component AppWindow inherits Window {
     callback controller-cancel-load-gesture();
     in-out property <bool> controller-browser-crates;
     out property <bool> controller-editor-open: root.crate-editor-open || root.cover-label-editor.open || root.left-grid-editing || root.right-grid-editing || root.left-cue-editing || root.right-cue-editing || left-deck.loop-name-focused || right-deck.loop-name-focused;
-    out property <bool> controller-search-focused: track-library.search-focused || track-library.import-text-focused;
+    out property <bool> controller-search-focused: track-library.search-focused || track-library.import-text-focused || track-library.diagnosis-text-focused;
     callback focus-library-tracks();
     focus-library-tracks => { track-library.focus-tracks(); }
     callback reveal-library-row(int);
@@ -739,6 +741,9 @@ export component AppWindow inherits Window {
     in-out property <int> library-tab;
     in property <TempoComparisonView> tempo-comparison;
     callback open-tempo-comparison();
+    in property <MetadataDiagnosisView> metadata-diagnosis;
+    callback open-metadata-diagnosis();
+    callback close-metadata-diagnosis();
     callback select-tempo-variant(bool);
     callback apply-tempo-comparison();
     callback cancel-tempo-comparison();
@@ -753,6 +758,10 @@ export component AppWindow inherits Window {
     private property <bool> cover-editor-obsolete: root.cover-label-editor.open
         && (!root.prepare-visible || root.cover-label-editor.track-id != root.selected-track);
     changed cover-editor-obsolete => { if root.cover-editor-obsolete { root.cancel-cover-labels(); } }
+    private property <bool> diagnosis-obsolete: root.metadata-diagnosis.open
+        && (!root.prepare-visible || root.import-review-open || root.tempo-comparison.open
+            || root.cover-label-editor.open || root.metadata-diagnosis.track-id != root.selected-track);
+    changed diagnosis-obsolete => { if root.diagnosis-obsolete { root.close-metadata-diagnosis(); } }
     callback analyze-library();
     callback add-phrase-cues();
     callback suggest-track(bool);
@@ -805,6 +814,9 @@ export component AppWindow inherits Window {
         width: 100%; height: 100%;
         capture-key-pressed(event) => {
             if event.text == Key.Escape && root.cancel-library-drag() { return accept; }
+            if event.text == Key.Escape && root.metadata-diagnosis.open && !root.diagnosis-obsolete {
+                root.close-metadata-diagnosis(); root.focus-library-tracks(); return accept;
+            }
             if root.cover-label-editor.open && event.text == Key.Escape { root.cancel-cover-labels(); return accept; }
             return reject;
         }
@@ -815,7 +827,7 @@ export component AppWindow inherits Window {
                 return reject;
             }
             if root.more-open && event.text == Key.Escape { root.more-open = false; more-button.focus(); return accept; }
-            if root.cover-label-editor.open || track-library.import-text-focused { return reject; }
+            if root.cover-label-editor.open || track-library.import-text-focused || track-library.diagnosis-text-focused { return reject; }
             if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta && event.modifiers.shift {
                 if event.text == Key.LeftArrow {
                     if !event.repeat { root.load-library-left(); }
@@ -1304,6 +1316,9 @@ Rectangle {
             change-column(id, action) => { root.change-table-column(id, action); }
             analysis-title: root.analysis-title; analysis-summary: root.analysis-summary; analysis-waveform: root.analysis-waveform;
             tempo-comparison: root.tempo-comparison;
+            metadata-diagnosis: root.metadata-diagnosis;
+            open-metadata-diagnosis => { root.open-metadata-diagnosis(); }
+            close-metadata-diagnosis => { root.close-metadata-diagnosis(); }
             open-tempo-comparison => { root.open-tempo-comparison(); }
             select-tempo-variant(fast) => { root.select-tempo-variant(fast); }
             apply-tempo-comparison => { root.apply-tempo-comparison(); }

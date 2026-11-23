@@ -2,6 +2,7 @@
 mod cover_labels;
 mod import_review;
 mod itunes;
+mod metadata_diagnosis;
 mod tempo_comparison;
 use crate::{
     playback::{DeckId, DualDeckEngine, LoopEdge, MixerLevels, PreparedTrack},
@@ -342,6 +343,7 @@ impl SearchWorker {
 }
 
 pub struct AudioController {
+    diagnosis: RefCell<metadata_diagnosis::State>,
     comparison: RefCell<Option<tempo_comparison::Comparison>>,
     preview_job: RefCell<Option<tempo_comparison::PreviewJob>>,
     covers: Rc<RefCell<crate::cover_cache::CoverCache>>,
@@ -454,6 +456,7 @@ pub struct AudioController {
 }
 impl Drop for AudioController {
     fn drop(&mut self) {
+        self.close_metadata_diagnosis();
         self.close_comparison();
         for id in [DeckId::A, DeckId::B] {
             if let Err(error) = self.cancel_temporary_hold(id) {
@@ -557,6 +560,7 @@ impl AudioController {
             picker,
             library_picker,
             library_folder_picker: RefCell::new(None),
+            diagnosis: RefCell::default(),
             comparison: RefCell::default(),
             preview_job: RefCell::default(),
             library: Rc::new(RefCell::new(crate::library::Library::default())),
@@ -1295,6 +1299,7 @@ impl AudioController {
         controller.wire_crates(ui);
         controller.wire_grid_editor(ui);
         controller.wire_tempo_comparison(ui);
+        controller.wire_metadata_diagnosis(ui);
         controller.wire_import_review(ui);
         controller.wire_cover_labels(ui);
         controller.wire_hot_cues(ui);
@@ -4987,6 +4992,7 @@ impl AudioController {
         self.refresh();
     }
     pub fn restore_library(&self, path: Result<PathBuf, String>, initial_paths: Vec<PathBuf>) {
+        self.close_metadata_diagnosis();
         self.fx_writable.set(false);
         if let Some(ui) = self.ui.upgrade() {
             ui.set_fx_status("FX session only".into());
@@ -5749,6 +5755,7 @@ impl AudioController {
         }
     }
     pub fn close_library(&self) -> Result<(), String> {
+        self.close_metadata_diagnosis();
         if self.import_review.borrow().is_some() {
             self.close_import_review();
         }
@@ -7397,6 +7404,7 @@ impl AudioController {
         self.maintain_sync(self.engine.borrow().control_now());
         self.save_library();
         self.poll_device_switch();
+        self.poll_metadata_diagnosis();
         self.refresh();
         if self.perf_status_updated.get().elapsed() >= std::time::Duration::from_secs(1) {
             if let Some(perf) = self.library_perf.borrow().as_ref() {
@@ -7776,7 +7784,7 @@ impl AudioController {
             .set_query_background(ui.get_library_query().to_string());
         let library = self.library.borrow();
         let selected = library.selected_id();
-        ui.set_selected_track(selected);
+        self.publish_track_selection(&ui, selected);
         ui.set_library_has_analysis_targets(library.has_analysis_targets());
         ui.set_library_can_relocate_selected(
             library
@@ -7851,7 +7859,7 @@ impl AudioController {
                     )));
                     ui.set_library_can_previous_page(false);
                     ui.set_library_can_next_page(false);
-                    ui.set_selected_track(-1);
+                    self.publish_track_selection(&ui, -1);
                     ui.set_library_can_relocate_selected(false);
                     ui.set_library_count("Search unavailable".into());
                     ui.set_library_empty("Search unavailable. Change search to retry.".into());
@@ -7907,7 +7915,7 @@ impl AudioController {
             worker.published = None;
         }
         if worker.wanted.as_ref() == Some(&spec) {
-            ui.set_selected_track(-1);
+            self.publish_track_selection(&ui, -1);
             return;
         }
         let key = (spec.generation, spec.revision, spec.scope);
@@ -7938,7 +7946,7 @@ impl AudioController {
             )));
             ui.set_library_can_previous_page(false);
             ui.set_library_can_next_page(false);
-            ui.set_selected_track(-1);
+            self.publish_track_selection(&ui, -1);
             ui.set_library_can_relocate_selected(false);
             ui.set_library_count("Search unavailable".into());
             ui.set_library_empty("Search unavailable. Change search to retry.".into());
@@ -7946,7 +7954,7 @@ impl AudioController {
         }
         ui.set_library_can_previous_page(false);
         ui.set_library_can_next_page(false);
-        ui.set_selected_track(-1);
+        self.publish_track_selection(&ui, -1);
         ui.set_library_can_relocate_selected(false);
         ui.set_library_count("Searching library…".into());
         ui.set_library_rows(ModelRc::new(Rc::new(
@@ -7954,10 +7962,17 @@ impl AudioController {
         )));
         ui.set_library_empty("Searching library…".into());
     }
+    fn publish_track_selection(&self, ui: &AppWindow, selected: i32) {
+        // Invalidate immediately even if selection returns to the original row before the next tick.
+        if ui.get_selected_track() != selected || ui.get_library_tab() != 4 {
+            self.close_metadata_diagnosis();
+        }
+        ui.set_selected_track(selected);
+    }
     fn publish_selected_library_track(&self, ui: &AppWindow) {
         let library = self.library.borrow();
         let selected = library.selected_id();
-        ui.set_selected_track(selected);
+        self.publish_track_selection(ui, selected);
         ui.set_library_can_relocate_selected(
             library
                 .track_by_id(selected)
@@ -8447,7 +8462,7 @@ impl AudioController {
                 ui.set_status("Library search worker stopped".into());
                 ui.set_library_can_previous_page(false);
                 ui.set_library_can_next_page(false);
-                ui.set_selected_track(-1);
+                self.publish_track_selection(&ui, -1);
                 ui.set_library_can_relocate_selected(false);
                 ui.set_library_count("Search unavailable".into());
                 ui.set_library_empty("Search unavailable. Change search to retry.".into());
@@ -8555,7 +8570,7 @@ impl AudioController {
             row_data_calls: Cell::new(0),
         })));
         let selected = library.selected_id();
-        ui.set_selected_track(selected);
+        self.publish_track_selection(&ui, selected);
         ui.set_library_can_relocate_selected(
             library
                 .track_by_id(selected)
@@ -9450,6 +9465,10 @@ mod dvs_tests {
 }
 #[cfg(test)]
 mod tests {
+    mod metadata_diagnosis_workflow {
+        use super::*;
+        include!("controller/metadata_diagnosis_tests.rs");
+    }
     mod invalid_import_media {
         use super::*;
         include!("controller/import_review_invalid_tests.rs");

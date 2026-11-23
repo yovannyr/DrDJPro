@@ -16,6 +16,95 @@ fn click(ui: &AppWindow, label: &str) {
 }
 
 #[test]
+fn metadata_diagnosis_reads_every_source_and_routes_only_current_octave_matches() {
+    use slint::platform::{Key, WindowEvent};
+    use std::cell::RefCell;
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_audio_enabled(true);
+        ui.set_view_mode(mode);
+        ui.set_library_tab(4);
+        ui.set_selected_track(17);
+        ui.set_left_loaded(true);
+        ui.set_left_playing(true);
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        let diagnosis = MetadataDiagnosisView {
+            open: true,
+            track_id: 17,
+            compare: true,
+            text: "BPM\nFile tag: 85\nLast analysis: missing\nCatalog: 170 (grid)\n\nKey\nFile tag: 8A\nLast analysis: unreadable\nCatalog: 9B (manual)\n\nCompare half and double tempo.".into(),
+        };
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let target = ui.as_weak();
+        let document = diagnosis.clone();
+        ui.on_open_metadata_diagnosis(move || {
+            target.unwrap().set_metadata_diagnosis(document.clone())
+        });
+        let logged = events.clone();
+        let target = ui.as_weak();
+        ui.on_close_metadata_diagnosis(move || {
+            logged.borrow_mut().push("close");
+            target.unwrap().set_metadata_diagnosis(Default::default());
+        });
+        let logged = events.clone();
+        ui.on_open_tempo_comparison(move || logged.borrow_mut().push("compare"));
+        let button = "Hear tempo interpretations from diagnosis";
+        let find = |label| ElementHandle::find_by_accessible_label(&ui, label).next();
+        click(&ui, "Open metadata diagnosis");
+        let content = find("Tag, analysis and catalog values").unwrap();
+        assert_eq!(content.accessible_read_only(), Some(true));
+        content.set_accessible_value("overwrite");
+        assert_eq!(content.accessible_value(), Some(diagnosis.text.clone()));
+        let play = if mode == LayoutMode::Classic {
+            "DECK A play/pause"
+        } else {
+            "PAUSE"
+        };
+        let transport = find(play).unwrap();
+        assert!(
+            transport.absolute_position().y + transport.size().height
+                <= content.absolute_position().y
+        );
+        let requested = Rc::new(Cell::new(false));
+        let observed = requested.clone();
+        ui.on_toggle_left(move || observed.set(true));
+        click(&ui, play);
+        assert!(requested.get());
+        click(&ui, button);
+        assert_eq!(&*events.borrow(), &["close", "compare"]);
+
+        click(&ui, "Open metadata diagnosis");
+        ui.set_metadata_diagnosis(MetadataDiagnosisView {
+            compare: false,
+            ..diagnosis.clone()
+        });
+        assert!(find(button).is_none());
+        for key in [Key::Tab, Key::Escape] {
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: key.into() });
+            ui.window()
+                .dispatch_event(WindowEvent::KeyReleased { text: key.into() });
+            assert_eq!(ui.get_metadata_diagnosis().open, key == Key::Tab);
+        }
+        click(&ui, "Open metadata diagnosis");
+        ui.set_selected_track(18);
+        assert!(find(button).is_none());
+        slint::platform::update_timers_and_animations();
+        assert!(!ui.get_metadata_diagnosis().open);
+        ui.set_selected_track(17);
+        click(&ui, "Open metadata diagnosis");
+        ui.set_library_tab(0);
+        slint::platform::update_timers_and_animations();
+        assert_eq!(
+            &*events.borrow(),
+            &["close", "compare", "close", "close", "close"]
+        );
+    }
+}
+
+#[test]
 fn import_review_pages_large_batches_and_keeps_transport_available() {
     #[derive(Default)]
     struct ImportRows {

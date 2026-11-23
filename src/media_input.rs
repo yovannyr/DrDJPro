@@ -18,6 +18,20 @@ const MAX_TAGS: usize = 8;
 pub(crate) const TAG_WARNING: &str = "ID3 tags skipped; audio readable: ";
 pub(crate) const WAVE_WARNING: &str = "MPEG audio read from WAV data; container tags omitted";
 
+/// Open for read-only inspection, without waiting for a writer if this is a Unix FIFO.
+/// The caller must check file type on the returned handle before reading.
+pub(crate) fn open_for_inspection(path: &Path) -> io::Result<File> {
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        // A source replaced by a FIFO must not strand a background inspection.
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    options.open(path)
+}
+
 fn explain_failure(path: &Path, error: Error) -> Error {
     let detail = if std::fs::metadata(path).is_ok_and(|m| m.len() == 0) {
         Some("Audio file is empty (0 bytes)".to_owned())

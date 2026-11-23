@@ -90,13 +90,13 @@ impl Stamp {
     }
 
     pub(crate) fn at(path: &Path) -> Result<Self, String> {
-        open_file(path)
+        crate::media_input::open_for_inspection(path)
             .and_then(|file| Self::read(&file))
             .map_err(|e| e.to_string())
     }
 
     fn open(&self, path: &Path) -> Result<File, String> {
-        let file = open_file(path).map_err(|e| e.to_string())?;
+        let file = crate::media_input::open_for_inspection(path).map_err(|e| e.to_string())?;
         if Self::read(&file).map_err(|e| e.to_string())? != *self {
             return Err("File changed since inspection".into());
         }
@@ -109,18 +109,6 @@ impl Stamp {
         }
         Ok(())
     }
-}
-
-fn open_file(path: &Path) -> io::Result<File> {
-    let mut options = File::options();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        // A file replaced by a FIFO must not strand the import worker.
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK);
-    }
-    options.open(path)
 }
 
 fn digest(path: &Path, stamp: &Stamp, cancel: &Cancellation) -> Result<[u8; 32], String> {

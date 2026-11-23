@@ -7,7 +7,8 @@
 | 1 · D04 | 85/170-BPM-Vergleich in Prepare umgesetzt. Signal-, Speicher-, UI- und Lasttests unter Windows bestanden. [Prüfbericht und Messwerte](3-bpm-detection/D04_ABNAHME.md) | Kopfhörer, Master und Bedienung am Gerät |
 | 2 · D03 | [Bestätigte Tonart und optionale Energie auf Covern](../cover-artwork.md#confirmed-key-and-energy-on-library-covers). Auswahl, Katalog-Neustart und Prüfsummen der Musikdateien unter Windows geprüft. | Lesbarkeit mit den eigenen Covern und der eigenen Bildschirm-Skalierung |
 | 3 · R04 | [Dateikopien und mögliche Edits vor dem Import prüfen](13-library-management/R04_ABNAHME.md). Zwei laufende Decks hielten in beiden Messläufen alle 3.000 Audiofristen ein. | Eigene Varianten in Classic und Modern auswählen und beide Decks bedienen |
-| 4–35 | Offen | Nach der Umsetzung |
+| 4 · R05 | [BPM und Tonart aus Dateitag, Analyse und Katalog vergleichen](13-library-management/R05_ABNAHME.md). Schreibschutz, Dateiformate, Auswahlwechsel und Audiolast unter Windows geprüft. | Diagnose und Hörvergleich mit eigenen widersprüchlich getaggten Titeln |
+| 5–35 | Offen | Nach der Umsetzung |
 
 ## Einstieg mit 85 oder 170 BPM
 

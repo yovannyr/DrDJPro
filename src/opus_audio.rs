@@ -15,11 +15,15 @@ pub(crate) fn is_opus(path: &Path) -> Result<bool, String> {
         .take(512)
         .read_to_end(&mut header)
         .map_err(|e| e.to_string())?;
+    Ok(has_opus_header(&header))
+}
+
+pub(crate) fn has_opus_header(header: &[u8]) -> bool {
     if header.len() < 27 || &header[..4] != b"OggS" {
-        return Ok(false);
+        return false;
     }
     let start = 27 + usize::from(header[26]);
-    Ok(header.get(start..start + 8) == Some(&b"OpusHead"[..]))
+    header.get(start..start + 8) == Some(&b"OpusHead"[..])
 }
 
 // Check real page boundaries, not arbitrary OggS byte sequences inside payloads.

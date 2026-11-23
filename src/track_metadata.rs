@@ -1,4 +1,5 @@
 //! Header/tag inspection on library/load workers; no PCM decode or tag writes.
+pub(crate) mod diagnosis;
 use drdjpro_ui_spike::analysis::keys::CamelotKey;
 use std::path::Path;
 use symphonia::core::meta::{Limit, MetadataOptions, MetadataRevision, StandardTagKey};
@@ -142,6 +143,13 @@ fn tags(output: &mut TrackMetadata, revision: &MetadataRevision) {
         }
     }
 }
+fn header_options() -> MetadataOptions {
+    MetadataOptions {
+        limit_metadata_bytes: Limit::Maximum(512 * 1024),
+        limit_visual_bytes: Limit::Maximum(0),
+    }
+}
+
 pub fn read(path: &Path) -> TrackMetadata {
     read_cancellable(path, &crate::cancellation::Cancellation::default())
         .expect("a fresh cancellation token cannot be cancelled")
@@ -172,13 +180,7 @@ pub(crate) fn probe_cancellable(
         return Ok((metadata, readable));
     }
     let result = (|| -> Result<TrackMetadata, Box<dyn std::error::Error>> {
-        let (mut probed, warning) = crate::media_input::probe(
-            path,
-            &MetadataOptions {
-                limit_metadata_bytes: Limit::Maximum(512 * 1024),
-                limit_visual_bytes: Limit::Maximum(0),
-            },
-        )?;
+        let (mut probed, warning) = crate::media_input::probe(path, &header_options())?;
         let mut output = TrackMetadata {
             scanned: true,
             error: warning,
