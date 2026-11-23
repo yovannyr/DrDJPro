@@ -15,13 +15,17 @@ description = "DrDJ Pro Rust desktop DJ application"
 
 [features]
 default = []
-ml-import = ["dep:drdj-ml", "dep:sha2", "dep:bytemuck"]
+ml-import = ["dep:drdj-ml", "dep:bytemuck"]
 # A binary linked with xwax must be distributed on GPLv3-compatible terms.
 dvs-xwax = ["dep:drdj-dvs"]
 
 [dependencies]
 drdj-ml = { path = "crates/drdj-ml", features = ["ort"], optional = true }
-sha2 = { version = "=0.10.9", optional = true }
+sha2 = "=0.10.9"
+base64 = "=0.23.1"
+ring = "=0.17.14"
+webbrowser = "=1.2.5"
+zeroize = "=1.9.1"
 bytemuck = { version = "=1.25.2", optional = true }
 drdj-itunes = { path = "crates/drdj-itunes" }
 url = "=2.5.8"
@@ -55,6 +59,8 @@ tempfile = "=3.27.0"
 minidumper = "=0.11.0"
 crash-handler = "=0.8.1"
 reqwest = { version = "=0.13.5", default-features = false, features = ["blocking", "json", "native-tls", "system-proxy"] }
+bytes = "=1.12.1"
+tokio = { version = "=1.54.1", default-features = false, features = ["net", "rt", "time"] }
 flate2 = "=1.1.10"
 
 [build-dependencies]
@@ -62,6 +68,7 @@ slint-build = "=1.18.1"
 winresource = { version = "=0.1.34", default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["windows-native"] }
 wry = { version = "=0.57.2", default-features = false, features = ["os-webview"] }
 slint = { version = "=1.18.1", features = ["unstable-winit-030"] }
 windows = { version = "=0.54.0", features = ["Win32_Media_Audio", "Win32_Devices_Properties", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_Debug", "Win32_System_Threading", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem"] }
@@ -69,7 +76,14 @@ windows = { version = "=0.54.0", features = ["Win32_Media_Audio", "Win32_Devices
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust", "vendored"] }
+
 [dev-dependencies]
+rsa = { version = "=0.9.10", default-features = false, features = ["getrandom", "sha2", "u64_digit"] }
 native-tls = "=0.2.18"
 minidump = "0.22"
 tempfile = "=3.27.0"

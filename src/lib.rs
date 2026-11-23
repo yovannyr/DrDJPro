@@ -1,6 +1,11 @@
 //! Shared production UI contract for the desktop executable and integration tests.
 //! Startup, controllers and audio composition remain in the executable.
 slint::include_modules!();
+mod ai_oauth;
+pub mod ai_registry;
+pub mod ai_router;
+pub mod ai_settings_ui;
+pub mod ai_transport;
 pub mod hid_finder;
 pub mod remote_display;
 mod remote_input;

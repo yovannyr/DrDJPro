@@ -461,6 +461,19 @@ impl Drop for AudioController {
     }
 }
 impl AudioController {
+    /// AI actions receive explicit tag fields. Display-title fallbacks may contain file names.
+    pub(crate) fn selected_ai_metadata(&self) -> Option<drdjpro_ui_spike::ai_router::AiInput> {
+        let library = self.library.borrow();
+        let tags = &library.track_by_id(library.selected_id())?.metadata;
+        if tags.title.trim().is_empty() && tags.artist.trim().is_empty() {
+            return None;
+        }
+        Some(drdjpro_ui_spike::ai_router::AiInput {
+            title: tags.title.clone(),
+            artist: tags.artist.clone(),
+        })
+    }
+
     pub fn wire(
         ui: &AppWindow,
         engine: Rc<DualDeckEngine>,
