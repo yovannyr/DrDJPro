@@ -5368,6 +5368,7 @@ mod tests {
     }
 
     mod ai_provider_performance;
+    mod import_review_performance;
     mod render_bench;
     mod tempo_preview;
 

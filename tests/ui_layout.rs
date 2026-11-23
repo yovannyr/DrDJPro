@@ -16,6 +16,155 @@ fn click(ui: &AppWindow, label: &str) {
 }
 
 #[test]
+fn import_review_pages_large_batches_and_keeps_transport_available() {
+    #[derive(Default)]
+    struct ImportRows {
+        reads: Cell<usize>,
+        skipped: Cell<Option<usize>>,
+        notify: slint::ModelNotify,
+    }
+    impl slint::Model for ImportRows {
+        type Data = ImportReviewRow;
+        fn row_count(&self) -> usize {
+            100_000
+        }
+        fn row_data(&self, index: usize) -> Option<ImportReviewRow> {
+            if index >= self.row_count() {
+                return None;
+            }
+            self.reads.set(self.reads.get() + 1);
+            let finding = match index {
+                0 => "Exact copy: identical bytes",
+                1 => "Possible edit: title and artist agree",
+                _ => "Unchecked: file changed while reading",
+            };
+            Some(ImportReviewRow {
+                index: index as i32,
+                selected: index < 99_999 && self.skipped.get() != Some(index),
+                eligible: index < 99_999,
+                path: format!("incoming/folder/track-{index}.mp3").into(),
+                matches: format!("{finding}\nexisting/collection/file-{index}.mp3").into(),
+            })
+        }
+        fn model_tracker(&self) -> &dyn slint::ModelTracker {
+            &self.notify
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_audio_enabled(true);
+        ui.set_left_loaded(true);
+        ui.set_left_playing(true);
+        ui.set_view_mode(mode);
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        let rows = Rc::new(ImportRows::default());
+        ui.set_import_review_rows(rows.clone().into());
+        ui.set_import_review_open(true);
+        ui.show().unwrap();
+        let control = |label| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .next()
+                .unwrap()
+        };
+        let text = || {
+            control("Import comparison details")
+                .accessible_value()
+                .unwrap()
+        };
+        let changed = rows.clone();
+        ui.on_toggle_import_review(move |index| {
+            let index = index as usize;
+            let keep = changed.skipped.get() == Some(index);
+            changed.skipped.set((!keep).then_some(index));
+            changed.notify.row_changed(index);
+        });
+        assert!(text().contains("incoming/folder/track-0.mp3"));
+        assert!(text().contains("Exact copy: identical bytes\nexisting/collection/file-0.mp3"));
+        click(&ui, "Keep incoming file");
+        assert_eq!(rows.skipped.get(), None);
+        click(&ui, "Skip incoming file");
+        click(&ui, "Skip incoming file");
+        assert_eq!(rows.skipped.get(), Some(0));
+        click(&ui, "Next import file");
+        assert!(text()
+            .contains("Possible edit: title and artist agree\nexisting/collection/file-1.mp3"));
+        click(&ui, "Previous import file");
+        assert_eq!(
+            control("Skip incoming file")
+                .accessible_description()
+                .as_deref(),
+            Some("Excluded from import")
+        );
+        control("Import file number").set_accessible_value("100000");
+        assert!(text().contains("incoming/folder/track-99999.mp3"));
+        assert!(text().contains("Unchecked: file changed while reading"));
+        assert_eq!(
+            control("Keep incoming file").accessible_enabled(),
+            Some(false)
+        );
+        click(&ui, "Previous import file");
+        assert_eq!(
+            control("Import file number").accessible_value().as_deref(),
+            Some("99999")
+        );
+        assert!(text().contains("incoming/folder/track-99998.mp3"));
+        let applied = Rc::new(Cell::new(0));
+        let observed = applied.clone();
+        ui.on_apply_import_review(move || observed.set(observed.get() + 1));
+        click(&ui, "Apply reviewed import");
+        let rescanned = Rc::new(Cell::new(false));
+        let observed = rescanned.clone();
+        ui.on_rescan_import_review(move || observed.set(true));
+        click(&ui, "Rescan import files");
+        assert!(rescanned.get());
+        ui.set_import_review_checking(true);
+        for label in [
+            "Apply reviewed import",
+            "Keep incoming file",
+            "Skip incoming file",
+            "Rescan import files",
+        ] {
+            assert_eq!(control(label).accessible_enabled(), Some(false));
+        }
+        click(&ui, "Apply reviewed import");
+        assert_eq!(applied.get(), 1);
+        let canceled = Rc::new(Cell::new(false));
+        let observed = canceled.clone();
+        ui.on_cancel_import_review(move || observed.set(true));
+        click(&ui, "Cancel reviewed import");
+        assert!(canceled.get());
+        let play = Rc::new(Cell::new(false));
+        let observed = play.clone();
+        ui.on_toggle_left(move || observed.set(true));
+        let transport_label = if mode == LayoutMode::Classic {
+            "DECK A play/pause"
+        } else {
+            "PAUSE"
+        };
+        let transport = control(transport_label);
+        let pane = control("Review library import");
+        assert!(
+            transport.absolute_position().y + transport.size().height <= pane.absolute_position().y
+        );
+        let cancel = control("Cancel reviewed import");
+        assert!(
+            cancel.absolute_position().y + cancel.size().height
+                <= pane.absolute_position().y + pane.size().height
+        );
+        click(&ui, transport_label);
+        assert!(play.get());
+        assert!(
+            rows.reads.get() < 100,
+            "only visited rows should be materialized"
+        );
+    }
+}
+
+#[test]
 fn cover_labels_show_confirmed_catalog_values_in_both_layouts() {
     i_slint_backend_testing::init_no_event_loop();
     let ui = AppWindow::new().unwrap();

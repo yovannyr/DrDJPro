@@ -1,4 +1,5 @@
 //! Session library state. File inspection runs on the control worker, not the UI/audio thread.
+pub(crate) mod import_review;
 pub mod protobuf;
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -117,6 +118,15 @@ pub struct ImportBatch {
     pub paths: Vec<PathBuf>,
     pub metadata: Vec<(PathBuf, crate::track_metadata::TrackMetadata)>,
     pub rejected: usize,
+    pub(crate) review: ImportEvidence,
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct ImportEvidence {
+    pub findings: Vec<import_review::ImportFinding>,
+    pub unavailable: Vec<(PathBuf, String)>,
+    pub stamps: Vec<Option<import_review::Stamp>>,
+    pub catalog_revision: Option<u64>,
 }
 #[cfg(test)]
 pub fn inspect_paths(paths: Vec<PathBuf>) -> ImportBatch {
@@ -132,13 +142,45 @@ pub(crate) fn inspect_paths_cancellable(
 pub(crate) fn inspect_files(
     paths: Vec<PathBuf>,
     cancel: &crate::cancellation::Cancellation,
-    _analyze_import: bool,
+    importing: bool,
 ) -> Result<ImportBatch, String> {
+    read_files(
+        paths,
+        cancel,
+        if importing {
+            Inspection::Import
+        } else {
+            Inspection::Maintenance
+        },
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Inspection {
+    Import,
+    ReviewHeaders,
+    Maintenance,
+}
+
+pub(crate) fn inspect_review_headers(
+    paths: Vec<PathBuf>,
+    cancel: &crate::cancellation::Cancellation,
+) -> Result<ImportBatch, String> {
+    read_files(paths, cancel, Inspection::ReviewHeaders)
+}
+
+fn read_files(
+    paths: Vec<PathBuf>,
+    cancel: &crate::cancellation::Cancellation,
+    mode: Inspection,
+) -> Result<ImportBatch, String> {
+    let importing = mode != Inspection::Maintenance;
     cancel.check()?;
     let mut result = ImportBatch {
         paths: Vec::new(),
         metadata: Vec::new(),
         rejected: paths.len().saturating_sub(MAX_IMPORT),
+        review: Default::default(),
     };
     for path in paths.into_iter().take(MAX_IMPORT) {
         cancel.check()?;
@@ -150,34 +192,65 @@ pub(crate) fn inspect_files(
                     result.rejected += 1;
                     continue;
                 }
-                let metadata = crate::track_metadata::read_cancellable(&path, cancel)?;
-                #[cfg(feature = "ml-import")]
-                let metadata = if _analyze_import
-                    && (crate::import_inference::configured().is_some()
-                        || std::env::var_os("DRDJ_BEAT_MODELS").is_some()
-                        || std::env::var_os("DRDJ_STEM_MODELS").is_some())
-                {
-                    let mut metadata = metadata;
-                    match crate::audio_analyzer::AudioAnalyzer::analyze_cancellable(&path, cancel) {
-                        Ok(analysis) if analysis.validate() => metadata.analysis = Some(analysis),
-                        Err(crate::audio_analyzer::AnalyzerError::Cancelled) => {
-                            return Err("Operation cancelled".into())
-                        }
-                        _ => log::warn!("Optional analysis unavailable for imported track"),
-                    }
-                    metadata
-                } else {
-                    metadata
-                };
+                let stamp = importing
+                    .then(|| import_review::Stamp::at(&path).ok())
+                    .flatten();
+                let (mut metadata, readable) =
+                    crate::track_metadata::probe_cancellable(&path, cancel)?;
+                if importing && !readable {
+                    result.review.unavailable.push((
+                        path.clone(),
+                        format!(
+                            "No readable audio track: {}",
+                            metadata.error.as_deref().unwrap_or("invalid media")
+                        ),
+                    ));
+                }
+                if mode == Inspection::Import && readable {
+                    analyze_import_metadata(&path, &mut metadata, cancel)?;
+                }
                 result.metadata.push((path.clone(), metadata));
+                result.review.stamps.push(stamp);
                 result.paths.push(path);
             }
-            _ => result.rejected += 1,
+            _ => {
+                result.rejected += 1;
+                if supported && !crate::audio_formats::is_apple_double(&path) {
+                    result
+                        .review
+                        .unavailable
+                        .push((path, "Cannot open this path as a regular audio file".into()));
+                }
+            }
         }
     }
     cancel.check()?;
     Ok(result)
 }
+/// Preserves the optional A2 analysis on newly confirmed sources. Called on an import worker.
+pub(crate) fn analyze_import_metadata(
+    path: &Path,
+    metadata: &mut crate::track_metadata::TrackMetadata,
+    cancel: &crate::cancellation::Cancellation,
+) -> Result<(), String> {
+    #[cfg(feature = "ml-import")]
+    if crate::import_inference::configured().is_some()
+        || std::env::var_os("DRDJ_BEAT_MODELS").is_some()
+        || std::env::var_os("DRDJ_STEM_MODELS").is_some()
+    {
+        match crate::audio_analyzer::AudioAnalyzer::analyze_cancellable(path, cancel) {
+            Ok(analysis) if analysis.validate() => metadata.analysis = Some(analysis),
+            Err(crate::audio_analyzer::AnalyzerError::Cancelled) => {
+                return Err("Operation cancelled".into())
+            }
+            _ => log::warn!("Optional analysis unavailable for imported track"),
+        }
+    }
+    #[cfg(not(feature = "ml-import"))]
+    let _ = (path, metadata, cancel);
+    Ok(())
+}
+
 pub(crate) fn inspect_directory_cancellable(
     root: &Path,
     cancel: &crate::cancellation::Cancellation,
@@ -264,6 +337,8 @@ struct TrackSearch {
     album: String,
     name: String,
     path: String,
+    // Lower-case search text cannot reopen a case-sensitive or non-Unicode native path.
+    native_path: Option<PathBuf>,
 }
 
 // A bounded, lossy trigram index. Collisions and obsolete metadata bits can
@@ -359,12 +434,15 @@ impl SearchIndex {
 
 impl Track {
     fn refresh_search(&mut self) {
+        let path = self.path.to_string_lossy().to_lowercase();
         self.search = Arc::new(TrackSearch {
             title: self.metadata.title.to_lowercase(),
             artist: self.metadata.artist.to_lowercase(),
             album: self.metadata.album.to_lowercase(),
             name: self.name.to_lowercase(),
-            path: self.path.to_string_lossy().to_lowercase(),
+            native_path: (self.path.as_os_str() != std::ffi::OsStr::new(&path))
+                .then(|| self.path.clone()),
+            path,
         });
     }
 
@@ -394,6 +472,33 @@ struct SearchRecord {
 
 const SEARCH_RECORD_CHUNK: usize = 256;
 type SearchRecordChunks = Arc<Vec<Arc<Vec<SearchRecord>>>>;
+
+/// Shares immutable catalog chunks with a worker without copying every path on the UI thread.
+#[derive(Clone)]
+pub(crate) struct ImportCatalog {
+    tracks: SearchRecordChunks,
+    pub revision: u64,
+}
+
+impl ImportCatalog {
+    pub fn references(&self) -> impl Iterator<Item = import_review::ImportReference> + '_ {
+        self.tracks
+            .iter()
+            .flat_map(|chunk| chunk.iter())
+            .map(|record| {
+                let s = &record.search;
+                import_review::ImportReference {
+                    path: s
+                        .native_path
+                        .clone()
+                        .unwrap_or_else(|| PathBuf::from(&s.path)),
+                    title: s.title.clone(),
+                    artist: s.artist.clone(),
+                    duration_ms: record.duration,
+                }
+            })
+    }
+}
 
 pub(crate) struct SearchProjection {
     tracks: SearchRecordChunks,
@@ -1649,6 +1754,13 @@ impl Library {
             },
             descending: self.descending,
             page_index: 0,
+        }
+    }
+
+    pub(crate) fn import_catalog(&self) -> ImportCatalog {
+        ImportCatalog {
+            tracks: Arc::clone(&self.search_records),
+            revision: self.search_revision,
         }
     }
 

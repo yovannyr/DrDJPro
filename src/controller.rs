@@ -1,5 +1,6 @@
 //! GUI control plane with injectable file selection and one bounded load worker.
 mod cover_labels;
+mod import_review;
 mod itunes;
 mod tempo_comparison;
 use crate::{
@@ -437,6 +438,8 @@ pub struct AudioController {
     pad_routing: RefCell<crate::pad_mode::Routing>,
     temporary_cues: RefCell<[Option<TemporaryCue>; 2]>,
     grid_editors: RefCell<[Option<GridSession>; 2]>,
+    import_review: RefCell<Option<import_review::ImportSession>>,
+    review_action: Cell<Option<import_review::ReviewAction>>,
     pending_import: RefCell<Option<Receiver<ImportResult>>>,
     pending_relocation_id: Cell<Option<i32>>,
     pending_analysis_id: Cell<Option<i32>>,
@@ -630,6 +633,8 @@ impl AudioController {
             pad_routing: RefCell::new(crate::pad_mode::Routing::default()),
             temporary_cues: RefCell::new([None, None]),
             grid_editors: RefCell::new([None, None]),
+            import_review: Default::default(),
+            review_action: Cell::new(None),
             pending_import: RefCell::new(None),
             pending_relocation_id: Cell::new(None),
             pending_analysis_id: Cell::new(None),
@@ -1290,6 +1295,7 @@ impl AudioController {
         controller.wire_crates(ui);
         controller.wire_grid_editor(ui);
         controller.wire_tempo_comparison(ui);
+        controller.wire_import_review(ui);
         controller.wire_cover_labels(ui);
         controller.wire_hot_cues(ui);
         controller.wire_loops(ui);
@@ -5743,6 +5749,9 @@ impl AudioController {
         }
     }
     pub fn close_library(&self) -> Result<(), String> {
+        if self.import_review.borrow().is_some() {
+            self.close_import_review();
+        }
         let mut sampler_error = None;
         {
             let mut s = self.sampler.borrow_mut();
@@ -7258,7 +7267,12 @@ impl AudioController {
             };
             self.pending_import.borrow_mut().take();
             let sync_session = self.sync_session_after_import.replace(false);
-            if let Some(track_id) = analysis_id {
+            if let Some(action) = self.review_action.take() {
+                if let Some(ui) = self.ui.upgrade() {
+                    ui.set_library_busy(false);
+                }
+                self.finish_import_review(action, result);
+            } else if let Some(track_id) = analysis_id {
                 let outcome = match result {
                     Ok(Some(Ok(batch))) => {
                         let current_path = self
@@ -7335,27 +7349,11 @@ impl AudioController {
                             if let Some(track_id) = relocation_id {
                                 self.complete_relocation(track_id, batch);
                             } else {
-                                let total = batch.paths.len();
-                                let added = self
-                                    .library
-                                    .borrow_mut()
-                                    .insert(batch.paths.iter().cloned());
-                                let assigned = self
-                                    .library
-                                    .borrow_mut()
-                                    .add_paths_to_crate(self.import_crate.get(), &batch.paths);
-                                for (path, metadata) in batch.metadata {
-                                    self.library.borrow_mut().set_metadata(&path, metadata);
-                                }
-                                self.library_changed();
-                                if sync_session {
-                                    self.sync_session_from_engine();
-                                }
-                                ui.set_status(format!("Added {added} tracks; {} skipped (duplicate, unsupported, missing or limit)", total - added + batch.rejected).into());
-                                if let Err(error) = assigned {
-                                    ui.set_status(format!("Added {added} library tracks; crate assignment failed: {error}").into());
-                                }
-                                self.publish_library();
+                                self.receive_import_batch(
+                                    batch,
+                                    self.import_crate.get(),
+                                    sync_session,
+                                );
                             }
                         }
                         Ok(None) => ui.set_status(if relocation_id.is_some() {
@@ -7470,6 +7468,7 @@ impl AudioController {
             || self.pending.borrow().is_some()
             || self.pending_import.borrow().is_some()
             || self.analysis_batch.borrow().is_some()
+            || self.import_review.borrow().is_some()
         {
             ui.set_status("Wait for the current operation before analyzing".into());
             return;
@@ -7580,6 +7579,7 @@ impl AudioController {
                     paths: vec![],
                     metadata: vec![(path, metadata)],
                     rejected: 0,
+                    review: Default::default(),
                 })
             })())
         });
@@ -7590,7 +7590,7 @@ impl AudioController {
         }
     }
     fn start_import(&self, picker: LibraryPicker) {
-        self.start_import_work(move |cancel| {
+        self.start_reviewed_import(move |cancel| {
             picker().map(|paths| crate::library::inspect_paths_cancellable(paths, cancel))
         });
     }
@@ -7705,7 +7705,7 @@ impl AudioController {
             }
             return;
         };
-        self.start_import_work(move |cancel| {
+        self.start_reviewed_import(move |cancel| {
             picker().map(|root| crate::library::inspect_directory_cancellable(&root, cancel))
         });
     }
@@ -7717,6 +7717,12 @@ impl AudioController {
             + Send
             + 'static,
     ) {
+        if self.import_review.borrow().is_some() && self.review_action.get().is_none() {
+            if let Some(ui) = self.ui.upgrade() {
+                ui.set_status("Finish or cancel the open import review first".into());
+            }
+            return;
+        }
         if !self.storage_ready.get()
             || self.pending.borrow().is_some()
             || self.pending_import.borrow().is_some()
@@ -9444,6 +9450,14 @@ mod dvs_tests {
 }
 #[cfg(test)]
 mod tests {
+    mod invalid_import_media {
+        use super::*;
+        include!("controller/import_review_invalid_tests.rs");
+    }
+    mod import_review_workflow {
+        use super::*;
+        include!("controller/import_review_tests.rs");
+    }
     mod cover_label_workflow {
         use super::*;
         include!("controller/cover_label_tests.rs");
@@ -18441,6 +18455,17 @@ mod tests {
         // A later import may be newer than the outstanding disk snapshot at shutdown.
         c.import_paths(vec![wav.path().into()]);
         finish_import(&c);
+        assert!(ui.get_import_review_open());
+        let rows = ui.get_import_review_rows();
+        assert_eq!(rows.row_count(), 1);
+        let copy = rows.row_data(0).unwrap();
+        assert!(copy.eligible && !copy.selected);
+        assert!(copy.matches.starts_with("Exact copy:"), "{}", copy.matches);
+        assert!(copy.matches.contains("will-disappear.wav"));
+        ui.invoke_toggle_import_review(copy.index);
+        ui.invoke_apply_import_review();
+        finish_import(&c);
+        assert!(!ui.get_import_review_open());
         c.close_library().unwrap();
         drop(c);
         std::fs::remove_file(&missing).unwrap();
@@ -18681,6 +18706,26 @@ mod tests {
         finish_storage(&c);
         c.import_paths(paths);
         finish_import(&c);
+        assert!(ui.get_import_review_open());
+        let review = ui.get_import_review_rows();
+        assert_eq!(review.row_count(), names.len());
+        for row in review.iter() {
+            assert!(row.eligible, "{}: {}", row.path, row.matches);
+            if !row.path.ends_with("format-aiff.aiff") {
+                assert!(row.matches.starts_with("Possible edit:"), "{}", row.matches);
+                assert!(
+                    !row.selected,
+                    "A tagged variant requires an explicit choice"
+                );
+            }
+            if !row.selected {
+                ui.invoke_toggle_import_review(row.index);
+            }
+        }
+        assert!(review.iter().all(|row| row.selected));
+        ui.invoke_apply_import_review();
+        finish_import(&c);
+        assert!(!ui.get_import_review_open());
         finish_storage(&c);
         assert_eq!(ui.get_library_rows().row_count(), names.len());
         for (index, name) in names.iter().enumerate() {
@@ -19191,8 +19236,8 @@ mod tests {
             Arc::new(|| None),
         );
         let first = wav_file(0, 48_000);
-        let bad = wav_file(0, 48_000);
-        let last = wav_file(0, 48_000);
+        let bad = wav_file(32, 48_000);
+        let last = wav_file(64, 48_000);
         c.import_paths(vec![
             first.path().into(),
             bad.path().into(),
@@ -19296,7 +19341,7 @@ mod tests {
             .metadata
             .analysis
             .clone();
-        let added = wav_file(0, 48_000);
+        let added = wav_file(96, 48_000);
         c.import_paths(vec![added.path().into()]);
         finish_import(&c);
         ui.invoke_analyze_library();
@@ -19497,7 +19542,7 @@ mod tests {
         ui.invoke_analyze_library();
         assert!(c.pending_import.borrow().is_none());
         assert!(ui.get_status().contains("No new or failed"));
-        let third = wav_file(0, 48_000);
+        let third = wav_file(128, 48_000);
         c.import_paths(vec![third.path().into()]);
         finish_import(&c);
         ui.invoke_analyze_library();
@@ -20381,7 +20426,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("library.sqlite3");
         let file = wav_file(8192, 48_000 * 8);
-        let bad = TempFile::new("mp3", b"invalid");
+        let bad = wav_file(5, 24_000);
         let ui = AppWindow::new().unwrap();
         let (mixer, _output) = rodio::mixer::mixer(1, 48_000);
         let engine = Rc::new(DualDeckEngine::from_mixer(mixer, 1, 48_000));
@@ -20397,6 +20442,7 @@ mod tests {
         );
         finish_storage(&c);
         finish_import(&c);
+        std::fs::write(bad.path(), b"invalid").unwrap();
         finish_storage(&c);
         ui.invoke_select_library(1);
         ui.invoke_load_library_left();
@@ -20680,7 +20726,7 @@ mod tests {
         let (mixer, _output) = rodio::mixer::mixer(1, 48_000);
         let engine = Rc::new(DualDeckEngine::from_mixer(mixer, 1, 48_000));
         let wav = wav_file(8192, 48_000);
-        let bad = TempFile::new("mp3", b"invalid music");
+        let bad = crate::test_support::tagged_mp3("Spare title", "Another artist", "B");
         let unsupported = TempFile::new("txt", b"not music");
         let batches = Arc::new(Mutex::new(VecDeque::from([
             Some(vec![
@@ -20706,6 +20752,13 @@ mod tests {
         control(&ui, "Import library files").invoke_accessible_default_action();
         assert!(ui.get_library_busy());
         finish_import(&c);
+        assert!(
+            ui.get_import_review_open(),
+            "The missing audio path requires review"
+        );
+        ui.invoke_apply_import_review();
+        finish_import(&c);
+        std::fs::write(bad.path(), b"invalid music").unwrap();
         assert_eq!(ui.get_library_rows().row_count(), 3);
         assert!(ui.get_status().contains("3 skipped"));
         assert_eq!(ui.get_selected_track(), -1);

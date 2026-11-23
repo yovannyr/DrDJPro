@@ -2,6 +2,7 @@
 import { Button, Slider, SpinBox, LineEdit, ListView, ComboBox, CheckBox } from "std-widgets.slint";
 import { DjTheme, DeckSlotData, LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, TempoComparisonView, CoverLabelEditor, LibraryRow, TableColumn, DeckView, SamplerRow } from "theme.slint";
 import { LibraryButton } from "controls.slint";
+import { ImportReviewRow, ImportReviewPanel } from "import-review.slint";
 
 export component CratePanel inherits Rectangle {
     in property <bool> managing;
@@ -190,6 +191,15 @@ component TempoComparisonPanel inherits VerticalLayout {
 }
 
 export component TrackLibrary inherits Rectangle {
+    in property <bool> import-review-open;
+    in property <bool> import-review-checking;
+    in property <[ImportReviewRow]> import-review-rows;
+    in property <string> import-review-status;
+    out property <bool> import-text-focused: review.text-focused;
+    callback toggle-import-review(int);
+    callback apply-import-review();
+    callback cancel-import-review();
+    callback rescan-import-review();
     in property <int> prep-queue-count;
     callback prep-action(int);
     out property <bool> search-focused: search-input.has-focus;
@@ -254,6 +264,7 @@ export component TrackLibrary inherits Rectangle {
     changed rows => { root.cancel-deck-drag(); }
     changed capture-deck-drag => { root.cancel-deck-drag(); }
     changed busy => { if root.busy { root.cancel-deck-drag(); } }
+    changed import-review-open => { if root.import-review-open { root.cancel-deck-drag(); } }
     in property <bool> job-active;
     callback cancel-job();
     in property <[LibraryRow]> rows;
@@ -282,6 +293,7 @@ export component TrackLibrary inherits Rectangle {
     callback retry-save();
     background: #111111; border-color: #333333; border-width: 1px;
     VerticalLayout {
+        visible: !root.import-review-open;
         padding: 3px; spacing: 2px;
         HorizontalLayout {
             spacing: 2px;
@@ -486,7 +498,7 @@ export component TrackLibrary inherits Rectangle {
             if save-failed : LibraryButton { text: "Retry save"; accessible-label: "Retry library save"; clicked => { root.retry-save(); } }
         }
     }
-        if root.columns-open : Rectangle {
+        if root.columns-open && !root.import-review-open : Rectangle {
             x: 8px; y: 30px; width: min(420px, parent.width - 16px); height: min(280px, parent.height - 36px);
             background: #222222; border-width: 1px; border-color: #aaaaaa;
             VerticalLayout {
@@ -510,5 +522,14 @@ export component TrackLibrary inherits Rectangle {
                 }
             }
         }
+    }
+    review := ImportReviewPanel {
+        width: parent.width; height: parent.height;
+        active: root.import-review-open; checking: root.import-review-checking;
+        rows: root.import-review-rows; status: root.import-review-status;
+        toggle-file(index) => { root.toggle-import-review(index); }
+        apply-review => { root.apply-import-review(); }
+        cancel-review => { root.cancel-import-review(); }
+        rescan => { root.rescan-import-review(); }
     }
 }

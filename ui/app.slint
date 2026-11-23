@@ -18,6 +18,8 @@ import { VirtualPlatter, ChannelMeter, HotCuePad, NudgeHold, LibraryButton, DjAc
 import { WaveformStrip, DetailWaveform } from "waveform.slint";
 import { CompactDeck, DeckPlaceholder } from "deck.slint";
 import { CratePanel, TrackLibrary } from "library.slint";
+import { ImportReviewRow } from "import-review.slint";
+export { ImportReviewRow } from "import-review.slint";
 import { EqStrip, FxStrip } from "editors.slint";
 
 import { Button, Slider, SpinBox, LineEdit, ListView, ComboBox, CheckBox, Palette, TextEdit } from "std-widgets.slint";
@@ -291,7 +293,7 @@ export component AppWindow inherits Window {
     callback controller-cancel-load-gesture();
     in-out property <bool> controller-browser-crates;
     out property <bool> controller-editor-open: root.crate-editor-open || root.cover-label-editor.open || root.left-grid-editing || root.right-grid-editing || root.left-cue-editing || root.right-cue-editing || left-deck.loop-name-focused || right-deck.loop-name-focused;
-    out property <bool> controller-search-focused: track-library.search-focused;
+    out property <bool> controller-search-focused: track-library.search-focused || track-library.import-text-focused;
     callback focus-library-tracks();
     focus-library-tracks => { track-library.focus-tracks(); }
     callback reveal-library-row(int);
@@ -412,6 +414,14 @@ export component AppWindow inherits Window {
     changed quantize-enabled => { root.quantize-mode-changed(); }
     in property <bool> loading: false;
     in property <bool> background-job-active;
+    in property <bool> import-review-open;
+    in property <bool> import-review-checking;
+    in property <[ImportReviewRow]> import-review-rows;
+    in property <string> import-review-status;
+    callback toggle-import-review(int);
+    callback apply-import-review();
+    callback cancel-import-review();
+    callback rescan-import-review();
     callback cancel-background-job();
     in property <bool> left-busy: false;
     in property <bool> right-busy: false;
@@ -805,7 +815,7 @@ export component AppWindow inherits Window {
                 return reject;
             }
             if root.more-open && event.text == Key.Escape { root.more-open = false; more-button.focus(); return accept; }
-            if root.cover-label-editor.open { return reject; }
+            if root.cover-label-editor.open || track-library.import-text-focused { return reject; }
             if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta && event.modifiers.shift {
                 if event.text == Key.LeftArrow {
                     if !event.repeat { root.load-library-left(); }
@@ -1274,6 +1284,14 @@ Rectangle {
             }
             drop-on-deck(deck, data) => { root.drop-track(deck, data); }
             import-itunes => { root.show-itunes(); }
+            import-review-open: root.import-review-open;
+            import-review-checking: root.import-review-checking;
+            import-review-rows: root.import-review-rows;
+            import-review-status: root.import-review-status;
+            toggle-import-review(index) => { root.toggle-import-review(index); }
+            apply-import-review => { root.apply-import-review(); }
+            rescan-import-review => { root.rescan-import-review(); }
+            cancel-import-review => { root.cancel-import-review(); }
             columns: root.table-columns; all-columns: root.all-table-columns; table-width: root.table-width;
             cover-overlay-enabled: root.cover-overlay-enabled;
             toggle-cover-overlay => { root.toggle-cover-overlay(); }

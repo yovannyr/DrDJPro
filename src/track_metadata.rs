@@ -151,16 +151,25 @@ pub(crate) fn read_cancellable(
     path: &Path,
     cancel: &crate::cancellation::Cancellation,
 ) -> Result<TrackMetadata, String> {
+    probe_cancellable(path, cancel).map(|(metadata, _)| metadata)
+}
+
+/// Report whether an audio track was found separately from recoverable header warnings.
+pub(crate) fn probe_cancellable(
+    path: &Path,
+    cancel: &crate::cancellation::Cancellation,
+) -> Result<(TrackMetadata, bool), String> {
     cancel.check()?;
     if crate::opus_audio::is_opus(path).unwrap_or(false) {
-        let metadata =
-            crate::opus_audio::metadata(path, cancel).unwrap_or_else(|error| TrackMetadata {
-                scanned: true,
-                error: Some(text(&error)),
-                ..Default::default()
-            });
+        let result = crate::opus_audio::metadata(path, cancel);
+        let readable = result.is_ok();
+        let metadata = result.unwrap_or_else(|error| TrackMetadata {
+            scanned: true,
+            error: Some(text(&error)),
+            ..Default::default()
+        });
         cancel.check()?;
-        return Ok(metadata);
+        return Ok((metadata, readable));
     }
     let result = (|| -> Result<TrackMetadata, Box<dyn std::error::Error>> {
         let (mut probed, warning) = crate::media_input::probe(
@@ -198,13 +207,14 @@ pub(crate) fn read_cancellable(
         }
         Ok(output)
     })();
+    let readable = result.is_ok();
     let metadata = result.unwrap_or_else(|e| TrackMetadata {
         scanned: true,
         error: Some(text(&e.to_string())),
         ..Default::default()
     });
     cancel.check()?;
-    Ok(metadata)
+    Ok((metadata, readable))
 }
 
 #[cfg(test)]
