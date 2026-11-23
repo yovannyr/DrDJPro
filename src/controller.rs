@@ -5,6 +5,7 @@ mod import_review;
 mod itunes;
 mod metadata_diagnosis;
 mod reference_piano;
+mod sample_browser;
 mod tempo_comparison;
 use crate::{
     playback::{DeckId, DualDeckEngine, LoopEdge, MixerLevels, PreparedTrack},
@@ -349,6 +350,7 @@ pub struct AudioController {
     comparison: RefCell<Option<tempo_comparison::Comparison>>,
     preview_job: RefCell<Option<tempo_comparison::PreviewJob>>,
     reference: RefCell<Option<reference_piano::PianoDraft>>,
+    sample_browser: RefCell<sample_browser::Browser>,
     covers: Rc<RefCell<crate::cover_cache::CoverCache>>,
     cover_visible: Rc<Cell<bool>>,
     device_opener: DeviceOpener,
@@ -461,6 +463,7 @@ pub struct AudioController {
 }
 impl Drop for AudioController {
     fn drop(&mut self) {
+        self.close_sample_browser();
         self.close_reference_editor();
         self.close_metadata_diagnosis();
         self.close_comparison();
@@ -570,6 +573,7 @@ impl AudioController {
             comparison: RefCell::default(),
             preview_job: RefCell::default(),
             reference: RefCell::default(),
+            sample_browser: RefCell::default(),
             library: Rc::new(RefCell::new(crate::library::Library::default())),
             library_generation: Rc::new(Cell::new(0)),
             library_page: Cell::new(0),
@@ -780,6 +784,7 @@ impl AudioController {
                         .and_then(|pair| c.engine.borrow().set_output_pair(pair));
                     if result.is_ok() && !c.engine.borrow().preview_route_available() {
                         c.stop_reference("Select a separate headphone output to audition.");
+                        c.poll_sample_browser();
                     }
                     if let Err(error) = result {
                         ui.set_output_pair_index(i32::from(c.engine.borrow().output_pair()));
@@ -1317,6 +1322,7 @@ impl AudioController {
         controller.wire_import_review(ui);
         controller.wire_cover_labels(ui);
         controller.wire_reference_piano(ui);
+        controller.wire_sample_browser(ui);
         controller.wire_hot_cues(ui);
         controller.wire_loops(ui);
         controller.wire_pitch(ui);
@@ -5018,6 +5024,7 @@ impl AudioController {
         self.refresh();
     }
     pub fn restore_library(&self, path: Result<PathBuf, String>, initial_paths: Vec<PathBuf>) {
+        self.close_sample_browser();
         self.close_reference_editor();
         self.close_metadata_diagnosis();
         self.invalidate_suggestion();
@@ -5798,6 +5805,7 @@ impl AudioController {
         }
     }
     pub fn close_library(&self) -> Result<(), String> {
+        self.close_sample_browser();
         self.invalidate_suggestion();
         self.close_reference_editor();
         self.close_metadata_diagnosis();
@@ -6018,21 +6026,7 @@ impl AudioController {
                 s.shared.stop(slot);
                 s.owners[slot] = crate::sampler::Owner::None;
             }
-            2 => {
-                if !self.storage_ready.get()
-                    || self.pending_device_switch.borrow().is_some()
-                    || s.job.is_some()
-                    || !s.restore.is_empty()
-                {
-                    return Err("Finish the current sampler load/restore first".into());
-                }
-                s.job = Some(crate::sampler::Load::start(
-                    s.shared.clone(),
-                    slot,
-                    self.picker.clone(),
-                )?);
-                self.sampler_status(format!("Loading sampler slot{}", slot + 1));
-            }
+            2 => self.load_sampler_slot(&mut s, slot, self.picker.clone())?,
             3 => {
                 if let Some(job) = s.job.as_ref().filter(|j| j.slot == slot) {
                     job.cancel.request();
@@ -6050,6 +6044,24 @@ impl AudioController {
         }
         Ok(())
     }
+    fn load_sampler_slot(
+        &self,
+        s: &mut crate::sampler::State,
+        slot: usize,
+        picker: TrackPicker,
+    ) -> Result<(), String> {
+        if !self.storage_ready.get()
+            || self.pending_device_switch.borrow().is_some()
+            || s.job.is_some()
+            || !s.restore.is_empty()
+        {
+            return Err("Finish the current sampler load/restore first".into());
+        }
+        s.job = Some(crate::sampler::Load::start(s.shared.clone(), slot, picker)?);
+        self.sampler_status(format!("Loading sampler slot {}", slot + 1));
+        Ok(())
+    }
+
     fn poll_sampler(&self) {
         let current = self.engine.borrow().sampler();
         let mut s = self.sampler.borrow_mut();
@@ -6998,6 +7010,7 @@ impl AudioController {
                 ) {
                     let _ = profiles.update(route);
                 }
+                self.close_sample_browser();
                 self.stop_reference("Audio device changed. Choose Play to audition again.");
                 let previous = self.engine.replace(engine);
                 let profiles = self.output_profiles_cache.borrow().clone();
@@ -7184,6 +7197,7 @@ impl AudioController {
     pub fn tick(&self) {
         self.poll_tempo_comparison();
         self.poll_reference();
+        self.poll_sample_browser();
         if self.covers.borrow_mut().poll() {
             if let Some(ui) = self.ui.upgrade() {
                 let rows = ui.get_library_rows();
@@ -9537,6 +9551,10 @@ mod tests {
     mod reference_piano_workflow {
         use super::*;
         include!("controller/reference_piano_tests.rs");
+    }
+    mod sample_browser_workflow {
+        use super::*;
+        include!("controller/sample_browser_tests.rs");
     }
     mod cover_label_workflow {
         use super::*;

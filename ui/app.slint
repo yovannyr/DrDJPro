@@ -23,6 +23,7 @@ export { ImportReviewRow } from "import-review.slint";
 import { MetadataDiagnosisView } from "metadata-diagnosis.slint";
 export { MetadataDiagnosisView } from "metadata-diagnosis.slint";
 import { GigRuleView } from "gig-planning.slint";
+import { SampleBrowserPanel } from "sample-browser.slint";
 export { GigRuleView } from "gig-planning.slint";
 import { EqStrip, FxStrip } from "editors.slint";
 
@@ -542,6 +543,20 @@ export component AppWindow inherits Window {
     in property <bool> fx-time-available-b:true;
     in property <bool> fx-chain-ready;
     in-out property <bool> sampler-open:false;
+    in property <bool> samp-preview-open;
+    in property <[string]> samp-preview-files;
+    in property <int> samp-preview-index: -1;
+    in property <string> samp-preview-status;
+    in property <bool> samp-preview-route;
+    in property <bool> samp-preview-busy;
+    in property <int> samp-preview-slot;
+    in property <int> samp-preview-bytes;
+    callback open-sample-browser(int);
+    callback choose-sample-folder();
+    callback select-sample-preview(int);
+    callback assign-sample-preview();
+    callback close-sample-browser();
+    changed sampler-open => { if !root.sampler-open && root.samp-preview-open { root.close-sample-browser(); } }
     in property <bool> sampler-ready;
     in property <bool> sampler-loading;
     in property <[SamplerRow]> sampler-slots;
@@ -833,6 +848,7 @@ export component AppWindow inherits Window {
     keyboard-scope := FocusScope {
         width: 100%; height: 100%;
         capture-key-pressed(event) => {
+            if event.text == Key.Escape && root.samp-preview-open { root.close-sample-browser(); return accept; }
             if event.text == Key.Escape && root.cancel-library-drag() { return accept; }
             if event.text == Key.Escape && root.gig-planning-open && !root.gig-planning-obsolete {
                 root.gig-planning-open = false; root.focus-library-tracks(); return accept;
@@ -1610,12 +1626,22 @@ Rectangle {
         x:16px;y:60px;width:parent.width - 32px;height:340px;
         background:DjTheme.panel-dark;border-width:1px;border-color:#53657d;
         accessible-role:groupbox;accessible-label:"Four-slot sampler";
-        VerticalLayout {
+        if root.samp-preview-open : SampleBrowserPanel {
+            slot: root.samp-preview-slot; files: root.samp-preview-files; selected-index: root.samp-preview-index;
+            status: root.samp-preview-status; headphones: root.samp-preview-route; choosing-folder: root.samp-preview-busy;
+            cached-bytes: root.samp-preview-bytes; can-assign: root.sampler-ready && !root.sampler-loading;
+            choose-folder => { root.choose-sample-folder(); }
+            select-file(index) => { root.select-sample-preview(index); }
+            assign => { root.assign-sample-preview(); }
+            close => { root.close-sample-browser(); }
+        }
+        if !root.samp-preview-open : VerticalLayout {
             padding:10px;spacing:8px;
             HorizontalLayout {Text {text:root.sampler-status;color:DjTheme.text-primary;overflow:elide;}Button {text:"STOP ALL";accessible-label:"Stop all sampler slots";clicked=>{root.sampler-action(0,4,false);}}Button {text:"CLOSE";accessible-label:"Close sampler";clicked=>{root.sampler-open=false;}}}
             for slot[index] in root.sampler-slots : HorizontalLayout {
                 Text {text:(index+1)+" · "+slot.name+(slot.playing ? " · PLAYING" : slot.busy ? " · PREPARING" : "");color:slot.playing ? #ffc15e : DjTheme.text-primary;overflow:elide;horizontal-stretch:1;}
                 Button {text:"LOAD";accessible-label:"Sampler slot "+(index+1)+" load";enabled:root.sampler-ready && !root.sampler-loading;clicked=>{root.sampler-action(index,2,false);}}
+                Button {text:"BROWSE";accessible-label:"Browse samples for slot "+(index+1);enabled:root.sampler-ready && !root.sampler-loading;clicked=>{root.open-sample-browser(index);}}
                 Button {text:"PLAY";accessible-label:"Sampler slot "+(index+1)+" play";enabled:root.sampler-ready && slot.loaded && !slot.busy;clicked=>{root.sampler-action(index,0,false);}}
                 Button {text:"STOP";accessible-label:"Sampler slot "+(index+1)+" stop";clicked=>{root.sampler-action(index,1,false);}}
                 Button {text:"CLEAR";accessible-label:"Sampler slot "+(index+1)+" clear";enabled:slot.occupied || slot.busy;clicked=>{root.sampler-action(index,3,false);}}

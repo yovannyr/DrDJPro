@@ -560,6 +560,65 @@ fn cover_labels_show_confirmed_catalog_values_in_both_layouts() {
 }
 
 #[test]
+fn sampler_browser_keeps_selection_separate_from_assignment_in_both_layouts() {
+    use slint::ModelRc;
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_audio_enabled(true);
+        ui.set_sampler_ready(true);
+        ui.set_sampler_slots(ModelRc::from([SamplerRow {
+            name: "Original kick".into(),
+            loaded: true,
+            ..Default::default()
+        }]));
+        ui.set_samp_preview_files(ModelRc::from(["Clap.wav".into(), "Ride.wav".into()]));
+        let target = ui.as_weak();
+        ui.on_open_sample_browser(move |slot| {
+            assert_eq!(slot, 0);
+            target.unwrap().set_samp_preview_open(true);
+        });
+        let target = ui.as_weak();
+        ui.on_select_sample_preview(move |index| target.unwrap().set_samp_preview_index(index));
+        let assigns = Rc::new(Cell::new(0));
+        let observed = assigns.clone();
+        ui.on_assign_sample_preview(move || observed.set(observed.get() + 1));
+        let target = ui.as_weak();
+        ui.on_close_sample_browser(move || target.unwrap().set_samp_preview_open(false));
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        click(&ui, "Show sampler");
+        slint::platform::update_timers_and_animations();
+        click(&ui, "Browse samples for slot 1");
+        let enabled = |label| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .next()
+                .unwrap()
+                .accessible_enabled()
+        };
+        assert_eq!(enabled("Assign selected sample to slot"), Some(false));
+        click(&ui, "Next sample");
+        assert_eq!(ui.get_samp_preview_index(), 0);
+        click(&ui, "Select sample Ride.wav");
+        assert_eq!(ui.get_samp_preview_index(), 1);
+        click(&ui, "Previous sample");
+        assert_eq!(ui.get_samp_preview_index(), 0);
+        assert_eq!(assigns.get(), 0);
+        assert_eq!(enabled("Assign selected sample to slot"), Some(true));
+        click(&ui, "Assign selected sample to slot");
+        assert_eq!(assigns.get(), 1);
+        click(&ui, "Close sample browser");
+        assert!(ui.get_sampler_open() && !ui.get_samp_preview_open());
+        click(&ui, "Browse samples for slot 1");
+        slint::platform::update_timers_and_animations();
+        click(&ui, "Show sampler");
+        slint::platform::update_timers_and_animations();
+        assert!(!ui.get_samp_preview_open());
+    }
+}
+
+#[test]
 fn reference_piano_uses_the_selected_passage_and_requires_headphones_in_both_layouts() {
     i_slint_backend_testing::init_no_event_loop();
     for mode in [LayoutMode::Classic, LayoutMode::Modern] {

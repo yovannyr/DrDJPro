@@ -32,6 +32,15 @@ pub(crate) fn open_for_inspection(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
+/// Validate the opened handle each time a decoder reopens a path (including recovery and Opus).
+pub(crate) fn open_regular(path: &Path) -> io::Result<File> {
+    let file = open_for_inspection(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("Not a regular audio file"));
+    }
+    Ok(file)
+}
+
 fn explain_failure(path: &Path, error: Error) -> Error {
     let detail = if std::fs::metadata(path).is_ok_and(|m| m.len() == 0) {
         Some("Audio file is empty (0 bytes)".to_owned())
@@ -101,7 +110,7 @@ pub(crate) fn probe(
     path: &Path,
     options: &MetadataOptions,
 ) -> Result<(ProbeResult, Option<String>), Error> {
-    match raw_probe(path, File::open(path)?, options) {
+    match raw_probe(path, open_regular(path)?, options) {
         Ok(result) => Ok((result, None)),
         Err(error) => {
             if let Ok(source) = mpeg_wave_source(path) {
@@ -122,7 +131,7 @@ pub(crate) fn probe(
 
 /// Rodio hides the parser error; independently validate the recovery source.
 pub(crate) fn recovery_source(path: &Path) -> Result<AudioWindow, Error> {
-    match raw_probe(path, File::open(path)?, &MetadataOptions::default()) {
+    match raw_probe(path, open_regular(path)?, &MetadataOptions::default()) {
         Err(error) => {
             if let Ok(source) = mpeg_wave_source(path) {
                 require_mp3(raw_probe(
@@ -149,7 +158,7 @@ pub(crate) struct AudioWindow {
 }
 impl AudioWindow {
     pub(crate) fn whole(path: &Path) -> io::Result<Self> {
-        let file = File::open(path)?;
+        let file = open_regular(path)?;
         let len = file.metadata()?.len();
         Ok(Self {
             file,
@@ -161,7 +170,7 @@ impl AudioWindow {
         self.len
     }
     fn after_id3(path: &Path) -> io::Result<Self> {
-        let mut file = File::open(path)?;
+        let mut file = open_regular(path)?;
         let len = file.metadata()?.len();
         let mut start = 0;
         for _ in 0..MAX_TAGS {

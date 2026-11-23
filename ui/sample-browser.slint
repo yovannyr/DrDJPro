@@ -1,0 +1,62 @@
+import { Button, ListView } from "std-widgets.slint";
+import { DjTheme } from "theme.slint";
+import { LibraryButton } from "controls.slint";
+
+export component SampleBrowserPanel inherits Rectangle {
+    in property <int> slot;
+    in property <[string]> files;
+    in property <int> selected-index: -1;
+    in property <string> status;
+    in property <bool> headphones;
+    in property <bool> choosing-folder;
+    in property <bool> can-assign;
+    in property <int> cached-bytes;
+    callback choose-folder();
+    callback select-file(int);
+    callback assign();
+    callback close();
+    changed selected-index => {
+        if root.selected-index < 0 { list.content-y = 0px; }
+        else if root.selected-index * 22px + list.content-y < 0px {
+            list.content-y = -root.selected-index * 22px;
+        } else if (root.selected-index + 1) * 22px + list.content-y > list.visible-height {
+            list.content-y = min(0px, list.visible-height - (root.selected-index + 1) * 22px);
+        }
+    }
+    accessible-role: groupbox; accessible-label: "Sample preview browser";
+    VerticalLayout {
+        padding: 10px; spacing: 5px;
+        HorizontalLayout {
+            spacing: 6px;
+            Text { text: "Samples for slot " + (root.slot + 1); color: DjTheme.text-primary; vertical-alignment: center; }
+            Button { text: "Choose folder"; accessible-label: "Choose sample folder"; enabled: !root.choosing-folder; clicked => { root.choose-folder(); } }
+            Button { text: "Close"; accessible-label: "Close sample browser"; clicked => { root.close(); } }
+        }
+        if !root.headphones : Text {
+            text: "Choose a separate headphone output to preview. You can still assign a sample.";
+            color: DjTheme.text-secondary; wrap: word-wrap;
+        }
+        list := ListView {
+            vertical-stretch: 1;
+            for file[index] in root.files : LibraryButton {
+                width: list.visible-width; min-width: 0px; clip: true;
+                text: file; accessible-label: "Select sample " + file;
+                active: index == root.selected-index; accessible-checkable: true; accessible-checked: self.active;
+                enabled: !root.choosing-folder;
+                clicked => { root.select-file(index); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 5px;
+            Button { text: "Previous"; accessible-label: "Previous sample"; enabled: !root.choosing-folder && root.selected-index > 0; clicked => { root.select-file(root.selected-index - 1); } }
+            Button { text: "Next"; accessible-label: "Next sample"; enabled: !root.choosing-folder && root.selected-index + 1 < root.files.length; clicked => { root.select-file(root.selected-index + 1); } }
+            Button {
+                text: "Assign to slot " + (root.slot + 1); accessible-label: "Assign selected sample to slot";
+                enabled: root.can-assign && !root.choosing-folder && root.selected-index >= 0 && root.selected-index < root.files.length;
+                clicked => { root.assign(); }
+            }
+        }
+        if root.status != "" : Text { text: root.status; color: DjTheme.text-primary; wrap: word-wrap; accessible-role: text; accessible-label: "Sample preview status"; accessible-description: self.text; }
+        Text { text: root.files.length + " files · " + ceil(root.cached-bytes / 1024) + " KiB in preview cache"; color: DjTheme.text-secondary; font-size: 11px; }
+    }
+}

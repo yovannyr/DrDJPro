@@ -120,6 +120,7 @@ impl Voice {
 enum PreviewVoice {
     Tempo(Voice),
     Key(super::key_reference::ReferenceVoice),
+    Sample(Excerpt),
 }
 
 pub(crate) struct PreviewControl {
@@ -136,6 +137,10 @@ impl PreviewControl {
 
     pub(super) fn start_reference(&self, voice: super::key_reference::ReferenceVoice) {
         self.publish(PreviewVoice::Key(voice));
+    }
+
+    pub(super) fn start_sample(&self, excerpt: Excerpt) {
+        self.publish(PreviewVoice::Sample(excerpt));
     }
 
     fn publish(&self, voice: PreviewVoice) {
@@ -205,6 +210,7 @@ impl PreviewRenderer {
             let frame = match voice {
                 PreviewVoice::Tempo(voice) => voice.frame(),
                 PreviewVoice::Key(voice) => Some(voice.frame()),
+                PreviewVoice::Sample(excerpt) => excerpt.frame(),
             };
             if let Some(frame) = frame {
                 return frame;

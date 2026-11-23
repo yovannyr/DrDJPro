@@ -77,6 +77,13 @@ fn file_id(file: &File, _metadata: &Metadata) -> io::Result<(u64, u64)> {
 }
 
 impl Stamp {
+    /// Some filesystems provide no usable file number. Skip reuse in those cases.
+    pub(crate) fn for_cache(file: &File) -> Option<Self> {
+        Self::read(file)
+            .ok()
+            .filter(|stamp| stamp.file_id.0 != 0 && stamp.file_id.1 != 0)
+    }
+
     fn read(file: &File) -> io::Result<Self> {
         let metadata = file.metadata()?;
         if !metadata.is_file() {

@@ -1,11 +1,15 @@
 //! Control-plane loading and two Rodio decks. Rodio itself is not lock-free.
 mod key_reference;
 mod preview_clip;
+mod sample_preview;
 pub(crate) mod tempo_preview;
 use crate::deck_render::{DeckRenderer, RenderControl, RenderFormat, SeekFrame};
 use crate::looping::{frame_at, frame_time, FrameLoop, PcmSource};
 use crate::playback_speed::PlaybackSpeed;
 pub(crate) use preview_clip::{PreviewClip, PREVIEW_DURATION};
+pub(crate) use sample_preview::SamplePreviewCache;
+/// Maximum resident decoded PCM capacity in the local sample browser cache.
+pub(crate) const MAX_SAMPLE_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
 use rodio::{mixer::Mixer, Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 use std::{
     cell::{Cell, RefCell},
@@ -1497,6 +1501,16 @@ impl DualDeckEngine {
         }
         let voice = key_reference::ReferenceVoice::new(clip, key, triad, self.output_rate)?;
         self.tempo_preview.start_reference(voice);
+        Ok(())
+    }
+
+    /// Play the excerpt once on the independent headphone pair, leaving all sampler pads intact.
+    pub(crate) fn play_sample_preview(&self, clip: &PreviewClip) -> Result<(), String> {
+        if !self.preview_route_available() {
+            return Err("Sample preview requires a separate headphone pair (3/4).".into());
+        }
+        let excerpt = tempo_preview::Excerpt::new(clip, self.output_rate)?;
+        self.tempo_preview.start_sample(excerpt);
         Ok(())
     }
 
@@ -5389,6 +5403,7 @@ mod tests {
     mod key_reference;
     mod metadata_diagnosis_performance;
     mod render_bench;
+    mod sample_preview;
     mod tempo_preview;
 
     fn compare_render_load(mut command: std::process::Command, unit: &str) {

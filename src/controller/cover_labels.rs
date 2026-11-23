@@ -39,6 +39,7 @@ impl AudioController {
         if ui.get_library_tab() != 4 || !self.storage_ready.get() {
             return Err("Open Prepare and wait for the library to finish loading".into());
         }
+        self.close_sample_browser();
         self.close_comparison();
         self.close_reference_editor();
         let library = self.library.borrow();

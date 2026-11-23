@@ -25,6 +25,7 @@ pub(super) struct Comparison {
 pub(super) enum PreviewOwner {
     Tempo,
     Piano,
+    Sample,
 }
 
 pub(super) struct PreviewJob {
@@ -41,13 +42,33 @@ impl PreviewJob {
         owner: PreviewOwner,
         epoch: u64,
     ) -> Result<Self, String> {
+        Self::read(owner, epoch, move |cancel| {
+            PreviewClip::open(&path, start, cancel)
+        })
+    }
+
+    pub(super) fn sample(
+        path: PathBuf,
+        epoch: u64,
+        cached: Option<PreviewClip>,
+    ) -> Result<Self, String> {
+        Self::read(PreviewOwner::Sample, epoch, move |cancel| {
+            PreviewClip::open_sample_or_cached(&path, Duration::ZERO, cancel, cached)
+        })
+    }
+
+    fn read(
+        owner: PreviewOwner,
+        epoch: u64,
+        read: impl FnOnce(&Cancellation) -> Result<PreviewClip, String> + Send + 'static,
+    ) -> Result<Self, String> {
         let cancel = Cancellation::default();
         let worker = cancel.clone();
         let (tx, result) = mpsc::sync_channel(1);
         std::thread::Builder::new()
-            .name("prepare-preview".into())
+            .name("headphone-preview".into())
             .spawn(move || {
-                let _ = tx.send(PreviewClip::open(&path, start, &worker));
+                let _ = tx.send(read(&worker));
             })
             .map_err(|error| error.to_string())?;
         Ok(Self {
@@ -248,6 +269,7 @@ impl AudioController {
     }
 
     fn open_comparison(&self) -> Result<(), String> {
+        self.close_sample_browser();
         self.close_comparison();
         let ui = self.ui.upgrade().ok_or("Window closed")?;
         self.close_reference_editor();

@@ -10,7 +10,7 @@ use std::{
 /// Inspect only the first Ogg page: the initial packet must be OpusHead.
 pub(crate) fn is_opus(path: &Path) -> Result<bool, String> {
     let mut header = Vec::new();
-    File::open(path)
+    crate::media_input::open_regular(path)
         .map_err(|e| e.to_string())?
         .take(512)
         .read_to_end(&mut header)
@@ -29,7 +29,7 @@ pub(crate) fn has_opus_header(header: &[u8]) -> bool {
 // Check real page boundaries, not arbitrary OggS byte sequences inside payloads.
 // The decoder subsequently validates each page CRC while it reads the stream.
 fn terminal_page(path: &Path, cancel: &Cancellation) -> Result<(i64, bool, usize), String> {
-    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let mut file = crate::media_input::open_regular(path).map_err(|e| e.to_string())?;
     let length = file.metadata().map_err(|e| e.to_string())?.len();
     let mut offset = 0_u64;
     let mut serial = None;
@@ -201,7 +201,7 @@ pub(crate) fn decode_stream_until(
 ) -> Result<(), String> {
     cancel.check()?;
     let (final_granule, empty_eos, first_page_packets) = terminal_page(path, cancel)?;
-    let file = File::open(path).map_err(|e| e.to_string())?;
+    let file = crate::media_input::open_regular(path).map_err(|e| e.to_string())?;
     let source = CancellableReader {
         file,
         cancel: cancel.clone(),
@@ -277,7 +277,7 @@ pub(crate) fn metadata(
     cancel: &Cancellation,
 ) -> Result<crate::track_metadata::TrackMetadata, String> {
     cancel.check()?;
-    let file = File::open(path).map_err(|e| e.to_string())?;
+    let file = crate::media_input::open_regular(path).map_err(|e| e.to_string())?;
     let source = CancellableReader {
         file,
         cancel: cancel.clone(),
