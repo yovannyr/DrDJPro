@@ -172,6 +172,7 @@ fn a06_profile_bounds_version_identity_and_cancellation() {
 #[ignore = "paired 30 s timed two-deck renders with cancellable local key analysis"]
 fn a06_equal_duration_local_key_analysis_with_two_decks() {
     let file = cadence(&MODULATION, true);
+    let mut phases = Vec::with_capacity(2);
     for active in [false, true] {
         eprintln!("A06 complete-file local harmony analysis active={active}");
         let (audio, count) = std::thread::scope(|scope| {
@@ -196,12 +197,13 @@ fn a06_equal_duration_local_key_analysis_with_two_decks() {
         });
         eprintln!("A06 complete modulation analyses={count}");
         assert!(if active { count >= 5 } else { count == 0 });
-        assert_eq!(
-            audio,
-            (0, 0, 0, 0),
-            "render overruns, deadline misses, signal errors, render allocations"
-        );
+        phases.push(audio);
     }
+    assert_eq!(
+        phases,
+        [(0, 0, 0, 0); 2],
+        "reference and load: render overruns, deadline misses, signal errors, render allocations"
+    );
 }
 
 #[test]

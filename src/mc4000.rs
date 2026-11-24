@@ -598,7 +598,8 @@ impl Input {
         }
         result
     }
-    pub fn poll(&mut self, mut apply: impl FnMut(Command)) -> bool {
+    pub fn poll(&mut self, mut timed: impl FnMut(Command, std::time::Instant)) -> bool {
+        let mut apply = |command| timed(command, std::time::Instant::now());
         if let Some(InputTrace { receiver, overflow }) = &self.trace {
             for _ in 0..128 {
                 let Ok((timestamp, bytes, len)) = receiver.try_recv() else {
@@ -636,11 +637,11 @@ impl Input {
         }
         poll_eq_knobs(&self.eq_levels, &mut apply);
         poll_pitch_faders(&self.pitch_faders, &mut apply);
-        dispatch_buttons(
+        dispatch_buttons_timed(
             &self.buttons,
             &mut self.accept_buttons_after,
             &self.overflow,
-            &mut apply,
+            timed,
         )
     }
 }
@@ -790,15 +791,24 @@ fn open_output() -> Result<Option<midir::MidiOutputConnection>, String> {
         .map(Some)
         .map_err(|e| e.to_string())
 }
+#[cfg(test)]
 fn dispatch_buttons(
     buttons: &Receiver<(std::time::Instant, Command)>,
     accept_after: &mut std::time::Instant,
     overflow: &AtomicBool,
     mut apply: impl FnMut(Command),
 ) -> bool {
+    dispatch_buttons_timed(buttons, accept_after, overflow, |command, _| apply(command))
+}
+fn dispatch_buttons_timed(
+    buttons: &Receiver<(std::time::Instant, Command)>,
+    accept_after: &mut std::time::Instant,
+    overflow: &AtomicBool,
+    mut apply: impl FnMut(Command, std::time::Instant),
+) -> bool {
     for _ in 0..128 {
         match buttons.try_recv() {
-            Ok((received, command)) if received >= *accept_after => apply(command),
+            Ok((received, command)) if received >= *accept_after => apply(command, received),
             Ok(_) => (),
             Err(_) => break,
         }

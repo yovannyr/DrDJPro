@@ -1,0 +1,93 @@
+import { ComboBox, LineEdit } from "std-widgets.slint";
+import { LibraryButton } from "controls.slint";
+import { DjTheme } from "theme.slint";
+
+export component CueTrimPanel inherits Rectangle {
+    in property <bool> busy;
+    in property <bool> route;
+    in property <[string]> slots;
+    in property <int> slot: -1;
+    in property <int> reference: -2;
+    in property <int> suggested: -1;
+    in property <string> position-seconds;
+    in property <string> status;
+    private property <bool> has-slot: root.slot >= 0 && root.slot < root.slots.length;
+    private property <bool> edited-position: position-input.text != root.position-seconds;
+    private property <bool> ready: root.has-slot && !root.busy && !root.edited-position;
+    callback select-slot(int);
+    callback select-reference(int);
+    callback move-step(int);
+    callback set-position(string);
+    callback audition();
+    callback stop();
+    callback save();
+    callback close();
+    function apply-position() {
+        root.set-position(position-input.text);
+        position-input.text = root.position-seconds;
+    }
+    changed position-seconds => { position-input.text = root.position-seconds; }
+    changed slot => { position-input.text = root.position-seconds; }
+    changed visible => {
+        position-input.text = root.position-seconds;
+        if root.visible { slot-choice.focus(); }
+    }
+    accessible-role: groupbox; accessible-label: "Cue trim";
+    background: DjTheme.panel-dark;
+    min-height: root.visible ? 107px : 0px;
+    preferred-height: root.visible ? 115px : 0px;
+    max-height: root.visible ? 122px : 0px;
+    VerticalLayout {
+        padding: 4px; spacing: 3px;
+        HorizontalLayout {
+            spacing: 5px;
+            Text { text: "Cue trim"; color: DjTheme.text-primary; vertical-alignment: center; }
+            slot-choice := ComboBox {
+                model: root.slots; current-index: root.slot;
+                accessible-label: "Hot cue to edit";
+                enabled: !root.busy && root.slots.length > 0;
+                selected => { root.select-slot(self.current-index); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            LibraryButton { text: "Save cue"; accessible-label: "Save edited cue position"; enabled: root.ready; clicked => { root.save(); } }
+            LibraryButton { text: "Cancel"; accessible-label: "Discard cue trim"; clicked => { root.close(); } }
+        }
+        HorizontalLayout {
+            spacing: 3px;
+            Text { text: "Reference"; color: DjTheme.text-primary; vertical-alignment: center; }
+            LibraryButton { text: "Free"; active: root.reference == -2; enabled: root.ready; clicked => { root.select-reference(-2); } }
+            LibraryButton { text: "Beatgrid"; active: root.reference == -1; enabled: root.ready; clicked => { root.select-reference(-1); } }
+            for label[i] in root.slots : LibraryButton {
+                text: "" + (i + 1); active: root.reference == i; enabled: root.ready && i != root.slot;
+                accessible-label: "Use cue " + (i + 1) + " as reference"; accessible-description: label;
+                clicked => { root.select-reference(i); }
+            }
+            if root.suggested >= 0 && root.suggested < root.slots.length && root.suggested != root.slot : LibraryButton {
+                text: "Suggested: " + (root.suggested + 1);
+                accessible-label: "Use suggested cue " + (root.suggested + 1) + " as reference";
+                enabled: root.ready; clicked => { root.select-reference(root.suggested); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            Text { text: "Position (s)"; color: DjTheme.text-primary; vertical-alignment: center; }
+            position-input := LineEdit {
+                width: 85px; height: 23px; accessible-label: "Cue position in seconds";
+                enabled: root.has-slot && !root.busy;
+                accepted => { root.apply-position(); }
+            }
+            LibraryButton { text: "Set"; accessible-label: "Apply entered position to draft"; enabled: root.has-slot && !root.busy && root.edited-position; clicked => { root.apply-position(); } }
+            LibraryButton { text: root.reference == -2 ? "−1 frame" : "−¼ beat"; accessible-label: root.reference == -2 ? "Move one frame earlier" : "Move one quarter beat earlier"; enabled: root.ready; clicked => { root.move-step(-1); } }
+            LibraryButton { text: root.reference == -2 ? "+1 frame" : "+¼ beat"; accessible-label: root.reference == -2 ? "Move one frame later" : "Move one quarter beat later"; enabled: root.ready; clicked => { root.move-step(1); } }
+            LibraryButton { text: "PFL"; accessible-label: "Audition from edited cue in headphones"; enabled: root.ready && root.route; clicked => { root.audition(); } }
+            LibraryButton { text: "Stop"; accessible-label: "Stop cue audition"; enabled: root.route || root.busy; clicked => { root.stop(); } }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        Text {
+            text: (root.route ? "" : "PFL needs separate headphones. ") + root.status;
+            color: DjTheme.text-secondary; overflow: elide;
+            accessible-role: text; accessible-label: "Cue trim status"; accessible-description: self.text;
+        }
+    }
+}

@@ -1,13 +1,28 @@
 //! GUI control plane with injectable file selection and one bounded load worker.
+mod chord_pair;
 mod clip_check;
 mod cover_labels;
+mod crate_arrangement;
+mod cue_trim;
 mod gigs;
+mod hook_marks;
+mod hook_practice;
 mod import_review;
 mod itunes;
+mod layer_view;
 mod local_keys;
 mod metadata_diagnosis;
+mod midi_scene;
+mod pad_patterns;
+mod passages;
+mod portable;
 mod reference_piano;
 mod sample_browser;
+mod sampler_tools;
+mod section_jump;
+mod set_planning;
+mod set_timeline;
+mod source_monitor;
 mod tempo_comparison;
 use crate::{
     playback::{DeckId, DualDeckEngine, LoopEdge, MixerLevels, PreparedTrack},
@@ -26,8 +41,13 @@ use std::{
     time::Duration,
 };
 
-type LoadResult =
-    Option<Result<(PathBuf, PreparedTrack, crate::track_metadata::TrackMetadata), String>>;
+struct LoadedTrack {
+    path: PathBuf,
+    track: PreparedTrack,
+    metadata: crate::track_metadata::TrackMetadata,
+    range: Option<portable::EntryRange>,
+}
+type LoadResult = Option<Result<LoadedTrack, String>>;
 type ImportResult = Option<Result<crate::library::ImportBatch, String>>;
 const DOUBLE_LOAD_WINDOW: Duration = Duration::from_millis(350);
 struct ControllerLoadPress {
@@ -348,6 +368,22 @@ impl SearchWorker {
 }
 
 pub struct AudioController {
+    cue_trim: RefCell<cue_trim::State>,
+    section_jumps: RefCell<[section_jump::SectionDeck; 2]>,
+    set_planning: RefCell<set_planning::State>,
+    source_monitor: RefCell<source_monitor::State>,
+    sampler_tools: RefCell<sampler_tools::State>,
+    layer_view: RefCell<layer_view::State>,
+    package: RefCell<portable::State>,
+    hooks: RefCell<hook_marks::State>,
+    hook_practice: RefCell<hook_practice::State>,
+    passages: RefCell<passages::State>,
+    scene: RefCell<midi_scene::State>,
+    arrangement: RefCell<crate_arrangement::State>,
+    pad_patterns: RefCell<pad_patterns::State>,
+    timeline: RefCell<set_timeline::State>,
+    midi_onset: Cell<Option<std::time::Instant>>,
+    chord_pair: RefCell<chord_pair::State>,
     local_keys: RefCell<local_keys::State>,
     clip_check: RefCell<clip_check::State>,
     diagnosis: RefCell<metadata_diagnosis::State>,
@@ -467,6 +503,8 @@ pub struct AudioController {
 }
 impl Drop for AudioController {
     fn drop(&mut self) {
+        self.close_cue_trim();
+        self.close_chord_pair();
         self.close_local_keys();
         self.close_clip_check();
         self.close_sample_browser();
@@ -579,6 +617,22 @@ impl AudioController {
             comparison: RefCell::default(),
             preview_job: RefCell::default(),
             reference: RefCell::default(),
+            cue_trim: RefCell::default(),
+            section_jumps: RefCell::default(),
+            set_planning: RefCell::default(),
+            source_monitor: RefCell::default(),
+            sampler_tools: RefCell::default(),
+            layer_view: RefCell::default(),
+            package: RefCell::default(),
+            hooks: RefCell::default(),
+            hook_practice: RefCell::default(),
+            passages: RefCell::default(),
+            scene: RefCell::default(),
+            arrangement: RefCell::default(),
+            pad_patterns: RefCell::default(),
+            timeline: RefCell::default(),
+            midi_onset: Cell::default(),
+            chord_pair: RefCell::default(),
             local_keys: RefCell::default(),
             clip_check: RefCell::default(),
             sample_browser: RefCell::default(),
@@ -794,6 +848,8 @@ impl AudioController {
                         c.stop_reference("Select a separate headphone output to audition.");
                         c.poll_sample_browser();
                         c.poll_clip_check();
+                        c.poll_chord_pair();
+                        c.poll_cue_trim();
                     }
                     if let Err(error) = result {
                         ui.set_output_pair_index(i32::from(c.engine.borrow().output_pair()));
@@ -1334,6 +1390,14 @@ impl AudioController {
         controller.wire_sample_browser(ui);
         controller.wire_clip_check(ui);
         controller.wire_local_keys(ui);
+        controller.wire_chord_pair(ui);
+        controller.wire_cue_trim(ui);
+        controller.wire_section_jumps(ui);
+        controller.wire_set_planning(ui);
+        controller.wire_source_monitor(ui);
+        controller.wire_sampler_tools(ui);
+        controller.wire_crate_arrangement(ui);
+        controller.wire_pad_patterns(ui);
         controller.wire_hot_cues(ui);
         controller.wire_loops(ui);
         controller.wire_pitch(ui);
@@ -3105,6 +3169,7 @@ impl AudioController {
     /// controller disconnects, reconnects, or the bounded MIDI queue overflows so no stale
     /// hold persists. GUI-held nudges are left untouched and remain effective.
     pub fn mc4000_release_holds(&self) {
+        self.finish_pad_recording();
         *self.pad_routing.borrow_mut() = crate::pad_mode::Routing::default();
         self.publish_pad_modes();
         {
@@ -4506,6 +4571,9 @@ impl AudioController {
             else {
                 return;
             };
+            if c.practice_pad(deck, slot, held, delete) {
+                return;
+            }
             let action = c.pad_routing.borrow_mut().pad(deck, slot, held, delete);
             let id = if deck == 0 { DeckId::A } else { DeckId::B };
             let result = match action {
@@ -5035,6 +5103,19 @@ impl AudioController {
         self.refresh();
     }
     pub fn restore_library(&self, path: Result<PathBuf, String>, initial_paths: Vec<PathBuf>) {
+        self.close_package();
+        *self.layer_view.borrow_mut() = layer_view::State::default();
+        self.close_scene();
+        self.close_sampler_tools();
+        self.close_hook_practice();
+        self.close_source_monitor();
+        self.reset_pad_patterns();
+        self.close_passages();
+        self.close_hook_marks();
+        self.close_crate_arrangement();
+        self.close_set_planning();
+        self.close_cue_trim();
+        self.close_chord_pair();
         self.close_local_keys();
         self.close_clip_check();
         self.close_sample_browser();
@@ -5463,7 +5544,7 @@ impl AudioController {
                 self.sampler.borrow_mut().saving = false;
                 match result {
                     Ok(prefs) => {
-                        self.sampler.borrow_mut().saved = prefs;
+                        self.sampler.borrow_mut().saved = *prefs;
                         self.sampler_status("Sampler bank saved".into());
                     }
                     Err(error) => self.sampler_status(format!("Sampler bank not saved: {error}")),
@@ -5497,6 +5578,7 @@ impl AudioController {
                 match result {
                     Ok(loaded) => {
                         let crate::library_store::LoadedLibrary {
+                            sampler_patterns,
                             sampler_preferences,
                             table_columns,
                             startup_audio,
@@ -5553,6 +5635,7 @@ impl AudioController {
                         }
                         self.restore_quantize_preferences(quantize_preferences);
                         self.restore_sampler(sampler_preferences);
+                        self.restore_pad_patterns(sampler_patterns);
                         let output_warning = self.restore_output_routes(output_routes);
                         let fx_warning = self.restore_fx(fx_preferences);
                         self.library_generation.set(
@@ -5818,6 +5901,21 @@ impl AudioController {
         }
     }
     pub fn close_library(&self) -> Result<(), String> {
+        self.close_package();
+        *self.layer_view.borrow_mut() = layer_view::State::default();
+        self.close_scene();
+        self.close_timeline();
+        self.close_sampler_tools();
+        let pattern_error = self.finish_pattern_write();
+        self.close_hook_practice();
+        self.close_source_monitor();
+        self.reset_pad_patterns();
+        self.close_passages();
+        self.close_hook_marks();
+        self.close_crate_arrangement();
+        self.close_set_planning();
+        self.close_cue_trim();
+        self.close_chord_pair();
         self.close_local_keys();
         self.close_clip_check();
         self.close_sample_browser();
@@ -5827,7 +5925,7 @@ impl AudioController {
         if self.import_review.borrow().is_some() {
             self.close_import_review();
         }
-        let mut sampler_error = None;
+        let mut sampler_error = pattern_error;
         {
             let mut s = self.sampler.borrow_mut();
             s.shared.stop_all();
@@ -5840,7 +5938,10 @@ impl AudioController {
             // current preferences have returned to the last acknowledged state.
             if s.writable && (s.preferences != s.saved || s.saving) {
                 if let Some(worker) = self.persistence.borrow().as_ref() {
-                    sampler_error = worker.flush_sampler(s.preferences.clone()).err();
+                    sampler_error = worker
+                        .flush_sampler(s.preferences.clone())
+                        .err()
+                        .or(sampler_error);
                 }
             }
         }
@@ -5985,6 +6086,8 @@ impl AudioController {
     }
     fn restore_sampler(&self, value: Result<crate::sampler::Preferences, String>) {
         let mut s = self.sampler.borrow_mut();
+        s.observed = Default::default();
+        let _ = s.shared.use_layout(None);
         s.shared.stop_all();
         s.cancel_load();
         s.restore.clear();
@@ -6025,12 +6128,15 @@ impl AudioController {
                 if !self.storage_ready.get()
                     || self.engine.borrow().output_failed()
                     || self.pending_device_switch.borrow().is_some()
-                    || s.job.as_ref().is_some_and(|j| j.slot == slot)
+                    || s.job
+                        .as_ref()
+                        .is_some_and(|j| j.slot == slot && !j.keep_playing)
                     || s.restore.iter().any(|(i, _)| *i == slot)
                 {
                     return Err("Sampler unavailable during restore/load/output change".into());
                 }
                 s.shared.play(slot)?;
+                self.capture_pad_hit(slot as u8, hardware);
                 s.owners[slot] = if hardware {
                     crate::sampler::Owner::Midi
                 } else {
@@ -6043,11 +6149,17 @@ impl AudioController {
             }
             2 => self.load_sampler_slot(&mut s, slot, self.picker.clone())?,
             3 => {
+                if s.preferences.tonal.is_some() {
+                    return Err("Switch to normal pads before replacing samples".into());
+                }
                 if let Some(job) = s.job.as_ref().filter(|j| j.slot == slot) {
                     job.cancel.request();
                 }
                 s.shared.clear(slot);
                 s.preferences.paths[slot] = None;
+                s.preferences.tuning[slot] = None;
+                s.preferences.layers[slot] = None;
+                s.observed[slot] = None;
                 s.restore.retain(|(i, _)| *i != slot);
                 s.owners[slot] = crate::sampler::Owner::None;
             }
@@ -6065,6 +6177,9 @@ impl AudioController {
         slot: usize,
         picker: TrackPicker,
     ) -> Result<(), String> {
+        if s.preferences.tonal.is_some() {
+            return Err("Switch to normal pads before replacing samples".into());
+        }
         if !self.storage_ready.get()
             || self.pending_device_switch.borrow().is_some()
             || s.job.is_some()
@@ -6072,7 +6187,13 @@ impl AudioController {
         {
             return Err("Finish the current sampler load/restore first".into());
         }
-        s.job = Some(crate::sampler::Load::start(s.shared.clone(), slot, picker)?);
+        s.job = Some(crate::sampler::Load::configured(
+            s.shared.clone(),
+            slot,
+            picker,
+            s.preferences.tuning[slot].clone(),
+            None,
+        )?);
         self.sampler_status(format!("Loading sampler slot {}", slot + 1));
         Ok(())
     }
@@ -6085,6 +6206,7 @@ impl AudioController {
             s.cancel_load();
             s.restore.clear();
             s.shared = current;
+            s.observed = Default::default();
             let _ = s.shared.set_gain(s.preferences.gain);
             for (i, path) in s.preferences.paths.clone().into_iter().enumerate() {
                 if let Some(path) = path {
@@ -6104,15 +6226,32 @@ impl AudioController {
         {
             let job = s.job.take().expect("Sampler job produced this result");
             match result {
-                Ok(Ok(Some(path)))
+                Ok(Ok(Some(loaded)))
                     if Arc::ptr_eq(&job.shared, &s.shared)
                         && s.shared.owns(job.slot, job.token) =>
                 {
-                    s.preferences.paths[job.slot] = Some(path);
+                    s.preferences.paths[job.slot] = Some(loaded.path);
+                    s.preferences.tuning[job.slot] = loaded.tuning;
+                    s.preferences.layers[job.slot] = loaded.pair;
+                    s.observed[job.slot] = Some(loaded.observed);
+                    if let Some(layout) = s
+                        .preferences
+                        .tonal
+                        .as_ref()
+                        .filter(|l| usize::from(l.slot) == job.slot)
+                    {
+                        if layout.digest != loaded.observed.digest
+                            || s.shared.use_layout(Some(layout)).is_err()
+                        {
+                            let _ = s.shared.use_layout(None);
+                            s.preferences.tonal = None;
+                        }
+                    }
                     self.sampler_status(format!("Sampler slot{} ready (stopped)", job.slot + 1));
                 }
                 Ok(Ok(_)) => (),
                 Ok(Err(error)) => {
+                    self.sampler_tool_message(format!("Sampler slot {}: {error}", job.slot + 1));
                     self.sampler_status(format!("Sampler slot{}: {error}", job.slot + 1))
                 }
                 Err(error) => {
@@ -6124,10 +6263,12 @@ impl AudioController {
         }
         if self.storage_ready.get() && s.job.is_none() {
             if let Some((slot, path)) = s.restore.pop_front() {
-                match crate::sampler::Load::start(
+                match crate::sampler::Load::configured(
                     s.shared.clone(),
                     slot,
                     Arc::new(move || Some(path.clone())),
+                    s.preferences.tuning[slot].clone(),
+                    s.preferences.layers[slot].clone(),
                 ) {
                     Ok(job) => s.job = Some(job),
                     Err(error) => self.sampler_status(error),
@@ -6153,7 +6294,10 @@ impl AudioController {
         ui.set_sampler_gain(s.preferences.gain * 100.);
         let rows = (0..4)
             .map(|i| {
-                let busy = s.job.as_ref().is_some_and(|j| j.slot == i)
+                let busy = s
+                    .job
+                    .as_ref()
+                    .is_some_and(|j| j.slot == i && !j.keep_playing)
                     || s.restore.iter().any(|(slot, _)| *slot == i);
                 let loaded = s.shared.ready(i);
                 let name = s.preferences.paths[i].as_ref().map_or_else(
@@ -6165,6 +6309,16 @@ impl AudioController {
                             .into_owned()
                     },
                 );
+                let name = s.preferences.layers[i]
+                    .as_ref()
+                    .map_or(name, |pair| pair.name.clone());
+                let name = s.preferences.tonal.as_ref().map_or(name, |l| {
+                    format!(
+                        "{} · {}",
+                        crate::source_monitor::analysis::note_name(i32::from(l.notes[i])),
+                        l.key
+                    )
+                });
                 crate::SamplerRow {
                     name: if !loaded && !busy && s.preferences.paths[i].is_some() {
                         format!("Unavailable: {name}").into()
@@ -6589,9 +6743,16 @@ impl AudioController {
         self.start_load(id, Arc::clone(&self.picker), 0.0);
     }
     fn start_load(&self, id: DeckId, picker: TrackPicker, bpm_hint: f32) {
-        self.start_load_work(id, picker, false, bpm_hint);
+        self.start_load_work(id, picker, false, bpm_hint, None);
     }
-    fn start_load_work(&self, id: DeckId, picker: TrackPicker, restoring: bool, bpm_hint: f32) {
+    fn start_load_work(
+        &self,
+        id: DeckId,
+        picker: TrackPicker,
+        restoring: bool,
+        bpm_hint: f32,
+        range: Option<portable::EntryRange>,
+    ) {
         self.controller_load_press.borrow_mut().take();
         self.load_generation
             .set(self.load_generation.get().wrapping_add(1));
@@ -6625,11 +6786,19 @@ impl AudioController {
                     let path = std::fs::canonicalize(path).map_err(|err| err.to_string())?;
                     let track =
                         PreparedTrack::open_cancellable_with_hint(&path, &cancel, bpm_hint)?;
+                    if let Some(range) = range {
+                        track.validate_source_range(range.start, range.end)?;
+                    }
                     let mut metadata = crate::track_metadata::read_cancellable(&path, &cancel)?;
                     metadata.duration_ms = Some(track.duration().as_millis() as u64);
                     metadata.duration_exact = true;
                     cancel.check()?;
-                    Ok((path, track, metadata))
+                    Ok(LoadedTrack {
+                        path,
+                        track,
+                        metadata,
+                        range,
+                    })
                 });
                 let _ = tx.send(result);
             }) {
@@ -6668,7 +6837,7 @@ impl AudioController {
             return;
         };
         let picker: TrackPicker = Arc::new(move || Some(path.clone()));
-        self.start_load_work(id, picker, true, 0.0);
+        self.start_load_work(id, picker, true, 0.0, None);
         if self.pending.borrow().is_none() {
             self.start_next_session_restore();
         }
@@ -6793,7 +6962,12 @@ impl AudioController {
         let mut restore_failed = false;
         ui.set_loading(false);
         match result {
-            Some(Ok((path, track, metadata))) => {
+            Some(Ok(LoadedTrack {
+                path,
+                track,
+                metadata,
+                range,
+            })) => {
                 self.covers.borrow_mut().invalidate(&path);
                 self.library.borrow_mut().insert([path.clone()]);
                 self.library.borrow_mut().set_metadata(&path, metadata);
@@ -6820,6 +6994,11 @@ impl AudioController {
                         ui.set_status(
                             format!("Deck loaded; saved grid unavailable: {error}").into(),
                         );
+                    }
+                    if let Some(range) = range {
+                        if let Err(error) = range.apply(&self.engine.borrow(), id) {
+                            ui.set_status(format!("Deck {id:?}: {error}").into());
+                        }
                     }
                 }
             }
@@ -7028,6 +7207,8 @@ impl AudioController {
                 self.close_sample_browser();
                 self.close_clip_check();
                 self.stop_reference("Audio device changed. Choose Play to audition again.");
+                self.close_chord_pair();
+                self.close_cue_trim();
                 let previous = self.engine.replace(engine);
                 let profiles = self.output_profiles_cache.borrow().clone();
                 let warning = self.restore_output_routes(profiles);
@@ -7211,10 +7392,22 @@ impl AudioController {
         }
     }
     pub fn tick(&self) {
+        self.poll_scene();
+        self.poll_timeline();
+        self.poll_pad_patterns();
+        self.poll_passages();
+        self.poll_hook_marks();
+        self.poll_crate_arrangement();
+        self.poll_set_planning();
+        self.poll_source_monitor();
+        self.poll_layer_view();
+        self.poll_package();
         self.poll_tempo_comparison();
         self.poll_reference();
         self.poll_sample_browser();
         self.poll_local_keys();
+        self.poll_chord_pair();
+        self.poll_cue_trim();
         self.poll_clip_check();
         if self.covers.borrow_mut().poll() {
             if let Some(ui) = self.ui.upgrade() {
@@ -7230,6 +7423,7 @@ impl AudioController {
             }
         }
         self.poll_sampler();
+        self.poll_sampler_tools();
         if let Some(perf) = self.library_perf.borrow().as_ref() {
             let (tracks, both_playing) = self.library_perf_context();
             perf.borrow_mut().tick(
@@ -8045,10 +8239,15 @@ impl AudioController {
         // Invalidate immediately even if selection returns to the original row before the next tick.
         let changed = ui.get_selected_track() != selected;
         if changed {
+            self.invalidate_layer_selection(ui, selected);
             self.invalidate_suggestion();
             self.publish_gig_rule(ui, selected, "");
         }
+        if ui.get_library_tab() != 4 {
+            self.close_chord_pair();
+        }
         if changed || ui.get_library_tab() != 4 {
+            self.close_cue_trim();
             self.close_local_keys();
             self.close_clip_check();
             self.close_reference_editor();
@@ -8832,6 +9031,7 @@ impl AudioController {
             });
             let (imported_title, artist, musical_key) =
                 metadata.unwrap_or_else(|| (None, String::new(), String::new()));
+            self.refresh_section_jump(&ui, id, &s);
             let title = imported_title.as_deref().unwrap_or(&s.title);
             let desired = s.detail.as_ref().map_or(s.requested_speed, |source| {
                 self.desired_pitch(id, source, s.requested_speed)
@@ -9583,6 +9783,43 @@ mod tests {
     mod local_key_workflow {
         use super::*;
         include!("controller/local_keys_tests.rs");
+    }
+    mod chord_pair_workflow {
+        use super::*;
+        include!("controller/chord_pair_tests.rs");
+    }
+    #[test]
+    fn portable_entries_of_one_recording_load_their_own_paused_ranges() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = AppWindow::new().unwrap();
+        let (mixer, _sink) = rodio::mixer::mixer(2, 48_000);
+        let engine = Rc::new(DualDeckEngine::from_mixer(mixer, 2, 48_000));
+        let controller =
+            AudioController::wire(&ui, engine.clone(), Arc::new(|| None), Arc::new(|| None));
+        let file = wav_file(4096, 144_000);
+        let path = file.path().canonicalize().unwrap();
+        let picker: TrackPicker = Arc::new(move || Some(path.clone()));
+        let range = |start, end| portable::EntryRange {
+            start: Duration::from_millis(start),
+            end: Some(Duration::from_millis(end)),
+        };
+        for (deck, marks) in [(DeckId::A, range(250, 750)), (DeckId::B, range(1500, 2000))] {
+            controller.start_load_work(deck, picker.clone(), false, 0., Some(marks));
+            finish(&controller);
+            let state = engine.snapshot(deck);
+            assert_eq!(state.position, marks.start);
+            assert_eq!(
+                (state.loop_in, state.loop_out),
+                (Some(marks.start), marks.end)
+            );
+            assert!(!state.playing && !state.loop_active);
+        }
+        controller.start_load_work(DeckId::A, picker, false, 0., Some(range(2000, 4000)));
+        finish(&controller);
+        assert!(ui.get_status().contains("outside the recording"));
+        let unchanged = engine.snapshot(DeckId::A);
+        assert_eq!(unchanged.position, Duration::from_millis(250));
+        assert_eq!(unchanged.loop_out, Some(Duration::from_millis(750)));
     }
     mod cover_label_workflow {
         use super::*;
@@ -13263,7 +13500,7 @@ mod tests {
         assert!(c.library.borrow().catalog().tracks[0].metadata.scanned);
         assert!(!ui.get_library_busy());
     }
-    fn finish_storage(c: &AudioController) {
+    pub(super) fn finish_storage(c: &AudioController) {
         let until = Instant::now() + Duration::from_secs(15);
         loop {
             c.tick();
@@ -13978,11 +14215,12 @@ mod tests {
         *c.pending.borrow_mut() = Some((DeckId::B, receiver));
         *c.pending_cancel.borrow_mut() = Some(crate::cancellation::Cancellation::default());
         sender
-            .send(Some(Ok((
-                imported.path().to_path_buf(),
-                PreparedTrack::open(imported.path()).unwrap(),
-                crate::track_metadata::read(imported.path()),
-            ))))
+            .send(Some(Ok(LoadedTrack {
+                path: imported.path().to_path_buf(),
+                track: PreparedTrack::open(imported.path()).unwrap(),
+                metadata: crate::track_metadata::read(imported.path()),
+                range: None,
+            })))
             .unwrap();
         ui.invoke_cancel_background_job();
         c.tick();

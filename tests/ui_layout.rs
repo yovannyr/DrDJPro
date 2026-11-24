@@ -5,7 +5,7 @@ use std::{cell::Cell, rc::Rc};
 
 use drdjpro_ui_spike::*;
 
-fn click(ui: &AppWindow, label: &str) {
+fn click(ui: &impl i_slint_backend_testing::ElementRoot, label: &str) {
     let controls: Vec<_> = ElementHandle::find_by_accessible_label(ui, label)
         .filter(|item| {
             item.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button)
@@ -13,6 +13,57 @@ fn click(ui: &AppWindow, label: &str) {
         .collect();
     assert_eq!(controls.len(), 1, "unique action: {label}");
     controls[0].invoke_accessible_default_action();
+}
+
+#[test]
+fn preparation_tools_are_reachable_in_both_layouts() {
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_modern_library_open(true);
+        ui.set_library_tab(4);
+        ui.set_selected_track(17);
+        let invoked = Rc::new(Cell::new(""));
+        let cue = invoked.clone();
+        ui.on_open_cue_trim(move || cue.set("cue trim"));
+        let planning = invoked.clone();
+        ui.on_open_set_planning(move || planning.set("planning"));
+        ui.show().unwrap();
+        click(&ui, "Fine-tune a hot cue");
+        assert_eq!(invoked.get(), "cue trim");
+        click(&ui, "Open set planning");
+        assert_eq!(invoked.get(), "planning");
+    }
+}
+
+#[test]
+fn planning_window_routes_each_action_to_its_editor() {
+    i_slint_backend_testing::init_no_event_loop();
+    let ui = SetPlanningWindow::new().unwrap();
+    let invoked = Rc::new(Cell::new(""));
+    macro_rules! action {
+        ($callback:ident, $label:literal) => {{
+            let invoked = invoked.clone();
+            ui.$callback(move || invoked.set($label));
+        }};
+    }
+    action!(on_open_hook_marks, "Wordplay");
+    action!(on_open_package, "Portable sets");
+    action!(on_open_passages, "Passages");
+    action!(on_open_project, "Timeline");
+    action!(on_open_midi_scene, "MIDI scene editor");
+    ui.show().unwrap();
+    for label in [
+        "Wordplay",
+        "Portable sets",
+        "Passages",
+        "Timeline",
+        "MIDI scene editor",
+    ] {
+        click(&ui, label);
+        assert_eq!(invoked.get(), label);
+    }
 }
 
 #[test]
@@ -556,6 +607,125 @@ fn cover_labels_show_confirmed_catalog_values_in_both_layouts() {
         assert_eq!(ui.get_selected_track(), 2);
         toggle.invoke_accessible_default_action();
         click(&ui, "Close track columns");
+    }
+}
+
+#[test]
+fn chord_pair_pins_independent_tracks_and_confirms_the_selected_source_interval() {
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_modern_library_open(true);
+        ui.set_library_tab(4);
+        ui.set_selected_track(17);
+        ui.set_library_rows(slint::ModelRc::from([
+            LibraryRow {
+                id: 29,
+                available: true,
+                name: "Second mix".into(),
+                ..Default::default()
+            },
+            LibraryRow {
+                id: 17,
+                available: true,
+                name: "First mix".into(),
+                ..Default::default()
+            },
+        ]));
+        let target = ui.as_weak();
+        ui.on_select_library(move |id| target.unwrap().set_selected_track(id));
+        let target = ui.as_weak();
+        ui.on_open_chord_pair(move || {
+            let ui = target.unwrap();
+            ui.set_chord_pair_open(true);
+            ui.set_chord_pair_a("First mix".into());
+        });
+        let target = ui.as_weak();
+        ui.on_close_chord_pair(move || target.unwrap().set_chord_pair_open(false));
+        let target = ui.as_weak();
+        ui.on_use_chord_track(move |side| {
+            let ui = target.unwrap();
+            assert_eq!((side, ui.get_selected_track()), (1, 29));
+            ui.set_chord_pair_b("Second mix".into());
+        });
+        let target = ui.as_weak();
+        ui.on_compare_chord_pair(move |settings| {
+            assert_eq!(settings.start_a.as_str(), "1.25");
+            assert_eq!(settings.offset_b.as_str(), "0.5");
+            assert_eq!(settings.pitch_b.as_str(), "2");
+            let ui = target.unwrap();
+            ui.set_chord_pair_rows(slint::ModelRc::from([
+                ChordPairRow {
+                    time: "0.0–0.5 s".into(),
+                    a: "D:min".into(),
+                    b: "—".into(),
+                },
+                ChordPairRow {
+                    time: "0.5–2.0 s".into(),
+                    a: "D:min".into(),
+                    b: "A:maj".into(),
+                },
+            ]));
+            ui.set_chord_pair_index(0);
+        });
+        let target = ui.as_weak();
+        ui.on_select_chord_row(move |row| target.unwrap().set_chord_pair_index(row));
+        let saves = Rc::new(Cell::new(0));
+        let counter = saves.clone();
+        let target = ui.as_weak();
+        ui.on_confirm_chord_event(move |side, chord| {
+            assert_eq!(
+                (target.unwrap().get_chord_pair_index(), side, chord.as_str()),
+                (1, 1, "Dm")
+            );
+            counter.set(counter.get() + 1);
+        });
+        let plays = Rc::new(Cell::new(0));
+        let counter = plays.clone();
+        ui.on_audition_chord_pair(move || counter.set(counter.get() + 1));
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        let control = |label| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .next()
+                .unwrap()
+        };
+        click(&ui, "Compare two chord passages");
+        click(&ui, "Choose library track for B");
+        slint::platform::update_timers_and_animations();
+        let candidate = control("Library track 29");
+        assert!(
+            candidate.size().height > 0.
+                && candidate.absolute_position().y + candidate.size().height <= 860.
+        );
+        candidate.invoke_accessible_default_action();
+        slint::platform::update_timers_and_animations();
+        assert!(ui.get_chord_pair_visible());
+        click(&ui, "Use selected track as B");
+        control("A passage start seconds").set_accessible_value("1.25");
+        control("B mix offset seconds").set_accessible_value("0.5");
+        control("B pitch semitones").set_accessible_value("2");
+        click(&ui, "Analyze both chord passages");
+        click(&ui, "Next chord interval");
+        control("Correct original source chord").set_accessible_value("Dm");
+        click(&ui, "Confirm B source chord");
+        assert_eq!(saves.get(), 1);
+        click(&ui, "Audition chord pair in headphones");
+        assert_eq!(plays.get(), 0);
+        ui.set_chord_pair_route(true);
+        click(&ui, "Audition chord pair in headphones");
+        assert_eq!(plays.get(), 1);
+        click(&ui, "Edit chord comparison timing");
+        assert_eq!(
+            control("A passage start seconds")
+                .accessible_value()
+                .as_deref(),
+            Some("1.25")
+        );
+        ui.set_library_tab(0);
+        slint::platform::update_timers_and_animations();
+        assert!(!ui.get_chord_pair_open());
     }
 }
 

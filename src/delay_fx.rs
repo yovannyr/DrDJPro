@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     sync::{
         atomic::{AtomicU32, AtomicU64, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
     time::Duration,
 };
@@ -163,27 +163,33 @@ impl DelayControl {
         }
         self.sequence.fetch_add(1, Ordering::SeqCst);
     }
-    fn read(&self) -> Option<DelaySettings> {
+    fn read(&self, previous: Option<u64>) -> Option<(u64, DelaySettings)> {
         let before = self.sequence.load(Ordering::SeqCst);
-        if before & 1 != 0 {
+        if before & 1 != 0 || previous == Some(before) {
             return None;
         }
-        let v = self.values.each_ref().map(|v| v.load(Ordering::SeqCst));
-        (before == self.sequence.load(Ordering::SeqCst)).then_some(DelaySettings {
-            enabled: v[0] != 0,
-            time_ms: v[1] as u16,
-            feedback: f32::from_bits(v[2]),
-            wet: f32::from_bits(v[3]),
-        })
+        let settings = DelaySettings {
+            enabled: self.values[0].load(Ordering::SeqCst) != 0,
+            time_ms: self.values[1].load(Ordering::SeqCst) as u16,
+            feedback: f32::from_bits(self.values[2].load(Ordering::SeqCst)),
+            wet: f32::from_bits(self.values[3].load(Ordering::SeqCst)),
+        };
+        (before == self.sequence.load(Ordering::SeqCst)).then_some((before, settings))
     }
 }
+/// The control side keeps the retired allocation alive through device shutdown.
+/// Only the uniquely owned ring can initialize this cell, once in its destructor.
+#[derive(Clone)]
+pub(crate) struct DelayMemory(Arc<OnceLock<Vec<f32>>>);
+
 pub(crate) struct DelayRing {
-    samples: Vec<AtomicU32>,
+    samples: Vec<f32>,
+    memory: DelayMemory,
     frames: usize,
     channels: usize,
 }
 impl DelayRing {
-    pub fn new(rate: u32, channels: u16) -> Result<Arc<Self>, String> {
+    pub fn new(rate: u32, channels: u16) -> Result<Self, String> {
         let frames = usize::try_from(rate)
             .map_err(|_| "Delay sample rate exceeds address space")?
             .checked_add(1)
@@ -198,24 +204,45 @@ impl DelayRing {
         samples
             .try_reserve_exact(count)
             .map_err(|e| format!("Cannot reserve delay buffer: {e}"))?;
-        samples.resize_with(count, || AtomicU32::new(0));
-        Ok(Arc::new(Self {
+        samples.resize(count, 0.);
+        Ok(Self {
             samples,
+            memory: DelayMemory(Arc::new(OnceLock::new())),
             frames,
             channels: usize::from(channels),
-        }))
+        })
     }
-    fn read(&self, cursor: usize, delay: usize, channel: usize) -> f32 {
-        let frame = (cursor + self.frames - delay) % self.frames;
-        f32::from_bits(self.samples[frame * self.channels + channel].load(Ordering::Relaxed))
+    pub fn retain_memory(&self) -> DelayMemory {
+        self.memory.clone()
+    }
+    /// First interleaved sample of the delayed frame. Every tap fits in the ring.
+    fn tap_offset(&self, write_offset: usize, delay_frames: usize) -> usize {
+        let distance = delay_frames * self.channels;
+        if write_offset >= distance {
+            write_offset - distance
+        } else {
+            self.samples.len() - (distance - write_offset)
+        }
+    }
+}
+impl Drop for DelayRing {
+    fn drop(&mut self) {
+        let samples = std::mem::take(&mut self.samples);
+        assert!(
+            self.memory.0.set(samples).is_ok(),
+            "delay ring retired twice"
+        );
     }
 }
 pub(crate) struct DelaySource<S> {
     source: S,
     control: Arc<DelayControl>,
-    ring: Arc<DelayRing>,
+    ring: DelayRing,
+    settings_version: u64,
     settings: DelaySettings,
-    cursor: usize,
+    write_offset: usize,
+    read_offset: usize,
+    crossfade_read_offset: usize,
     channel: usize,
     old_tap: usize,
     new_tap: usize,
@@ -227,16 +254,15 @@ pub(crate) struct DelaySource<S> {
     target_wet: f32,
     target_feedback: f32,
     smoothing: u32,
-    cue_controls: Option<[Arc<crate::cue_bus::DeckMixControl>; 2]>,
-    cue_deck: usize,
+    route: crate::fx_chain::AuxRoute<S>,
     auxiliary_passthrough: bool,
 }
 impl<S: Source> DelaySource<S> {
-    pub fn new(source: S, control: Arc<DelayControl>, ring: Arc<DelayRing>) -> Self {
+    pub fn new(source: S, control: Arc<DelayControl>, ring: DelayRing) -> Self {
         assert_eq!(usize::from(source.channels()), ring.channels);
         assert_eq!(u64::from(source.sample_rate()) + 1, ring.frames as u64);
-        let settings = control
-            .read()
+        let (settings_version, settings) = control
+            .read(None)
             .expect("delay installed on control-plane writer");
         let tap = ((u64::from(source.sample_rate()) * u64::from(settings.time_ms)) / 1000).max(1)
             as usize;
@@ -246,8 +272,11 @@ impl<S: Source> DelaySource<S> {
             source,
             control,
             ring,
+            settings_version,
             settings,
-            cursor: 0,
+            write_offset: 0,
+            read_offset: 0,
+            crossfade_read_offset: 0,
             channel: 0,
             old_tap: tap,
             new_tap: tap,
@@ -260,19 +289,16 @@ impl<S: Source> DelaySource<S> {
             target_feedback: settings.feedback,
             smoothing: 0,
             auxiliary_passthrough: false,
-            cue_controls: None,
-            cue_deck: 0,
+            route: crate::fx_chain::AuxRoute::None,
         }
     }
-    pub fn with_cue_controls(
-        mut self,
-        controls: [Arc<crate::cue_bus::DeckMixControl>; 2],
-        deck: usize,
-    ) -> Self {
-        assert!(deck < 2);
-        self.cue_controls = Some(controls);
-        self.cue_deck = deck;
+    pub fn with_route(mut self, route: crate::fx_chain::AuxRoute<S>) -> Self {
+        self.route = route;
         self
+    }
+
+    pub fn rendered_aux(&self) -> bool {
+        self.auxiliary_passthrough
     }
 }
 impl<S: Source> Iterator for DelaySource<S> {
@@ -281,10 +307,10 @@ impl<S: Source> Iterator for DelaySource<S> {
         // A deck mixer can admit sources later; keep its fixed-format effect bus alive.
         let dry = self.source.next().unwrap_or(0.);
         if self.channel == 0 {
-            self.auxiliary_passthrough = self.cue_controls.as_ref().is_some_and(|controls| {
-                controls[self.cue_deck].rendered_cue() || controls.iter().any(|c| c.monitor_mode())
-            });
-            if let Some(settings) = self.control.read() {
+            self.auxiliary_passthrough = self.route.active(&self.source);
+            // An unchanged version costs one load. A busy writer is retried next frame.
+            if let Some((version, settings)) = self.control.read(Some(self.settings_version)) {
+                self.settings_version = version;
                 if settings != self.settings {
                     self.settings = settings;
                     self.target_wet = if settings.enabled { settings.wet } else { 0. };
@@ -300,6 +326,10 @@ impl<S: Source> Iterator for DelaySource<S> {
                 self.new_tap = self.pending_tap;
                 self.tap_fade = 1;
             }
+            self.read_offset = self.ring.tap_offset(self.write_offset, self.old_tap);
+            if self.tap_fade != 0 {
+                self.crossfade_read_offset = self.ring.tap_offset(self.write_offset, self.new_tap);
+            }
             if self.smoothing != 0 {
                 self.wet += (self.target_wet - self.wet) / self.smoothing as f32;
                 self.feedback += (self.target_feedback - self.feedback) / self.smoothing as f32;
@@ -310,11 +340,12 @@ impl<S: Source> Iterator for DelaySource<S> {
                 }
             }
         }
-        let a = self.ring.read(self.cursor, self.old_tap, self.channel);
+        let history = &mut self.ring.samples;
+        let a = history[self.read_offset + self.channel];
         let echo = if self.tap_fade == 0 {
             a
         } else {
-            let b = self.ring.read(self.cursor, self.new_tap, self.channel);
+            let b = history[self.crossfade_read_offset + self.channel];
             a + (b - a) * self.tap_fade as f32 / self.ramp as f32
         };
         // Never record the pre-fader headphone bus in master effect history.
@@ -325,14 +356,12 @@ impl<S: Source> Iterator for DelaySource<S> {
         } else {
             0.
         };
-        self.ring.samples[self.cursor * self.ring.channels + self.channel].store(
-            if written.is_finite() && written.abs() >= 1e-30 {
-                written.to_bits()
-            } else {
-                0
-            },
-            Ordering::Relaxed,
-        );
+        history[self.write_offset + self.channel] = if written.is_finite() && written.abs() >= 1e-30
+        {
+            written
+        } else {
+            0.
+        };
         let output = if self.wet == 0. || (self.auxiliary_passthrough && self.channel >= 2) {
             dry
         } else {
@@ -341,7 +370,10 @@ impl<S: Source> Iterator for DelaySource<S> {
         self.channel += 1;
         if self.channel == self.ring.channels {
             self.channel = 0;
-            self.cursor = (self.cursor + 1) % self.ring.frames;
+            self.write_offset += self.ring.channels;
+            if self.write_offset == history.len() {
+                self.write_offset = 0;
+            }
             if self.tap_fade == self.ramp {
                 self.old_tap = self.new_tap;
                 self.tap_fade = 0;
@@ -370,6 +402,90 @@ impl<S: Source> Source for DelaySource<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delay_tap_offsets_match_circular_frame_positions_for_every_channel() {
+        for channels in [1, 2, 3, 4, 6] {
+            for rate in [1, 7, 20] {
+                let ring = DelayRing::new(rate, channels).unwrap();
+                for frame in 0..ring.frames {
+                    for delay in 1..ring.frames {
+                        let first_sample = ring.tap_offset(frame * ring.channels, delay);
+                        let expected_frame = (frame + ring.frames - delay) % ring.frames;
+                        assert_eq!(first_sample, expected_frame * ring.channels);
+                        assert!(first_sample + ring.channels <= ring.samples.len());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn delay_control_retries_odd_versions_and_skips_the_last_complete_version() {
+        let control = DelayControl::new();
+        let (version, initial) = control.read(None).unwrap();
+        assert_eq!(control.read(Some(version)), None);
+        control.sequence.fetch_add(1, Ordering::SeqCst);
+        control.values[1].store(20, Ordering::SeqCst);
+        assert_eq!(control.read(Some(version)), None);
+        control.sequence.fetch_add(1, Ordering::SeqCst);
+        let (updated, value) = control.read(Some(version)).unwrap();
+        assert_eq!(
+            value,
+            DelaySettings {
+                time_ms: 20,
+                ..initial
+            }
+        );
+        assert_eq!(control.read(Some(updated)), None);
+    }
+
+    #[test]
+    fn delay_four_channel_bypass_keeps_echoes_through_ring_wrap_and_tap_crossfade() {
+        let control = DelayControl::new();
+        let mut settings = DelaySettings {
+            enabled: false,
+            time_ms: 20,
+            feedback: 0.5,
+            wet: 1.,
+        };
+        control.publish(settings);
+        let pulse = [0.25, -0.5, 0.75, -0.125];
+        let mut input = vec![0.; 1060 * 4];
+        input[995 * 4..996 * 4].copy_from_slice(&pulse);
+        let mut delay = DelaySource::new(
+            rodio::buffer::SamplesBuffer::new(4, 1000, input),
+            Arc::clone(&control),
+            DelayRing::new(1000, 4).unwrap(),
+        );
+        for frame in 0..1060 {
+            for (channel, amplitude) in pulse.iter().enumerate() {
+                if (frame, channel) == (1003, 2) {
+                    settings.enabled = true;
+                    control.publish(settings);
+                }
+                if (frame, channel) == (1054, 0) {
+                    settings.time_ms = 21;
+                    control.publish(settings);
+                }
+                let factor = match frame {
+                    995 | 1015 => 1.,
+                    1035 => 0.5,
+                    // The old and new taps crossfade over five frames.
+                    1055 | 1056 => 0.15,
+                    _ => 0.,
+                };
+                let actual = delay.next().unwrap();
+                if frame == 1003 || frame == 1004 {
+                    assert_eq!(delay.settings.enabled, frame == 1004);
+                }
+                assert!(
+                    (actual - amplitude * factor).abs() < 1e-6,
+                    "frame={frame} ch={channel} actual={actual}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn fx_musical_time_updates_crossfade_latest_target_and_realtime_budget() {
         use crate::fx_timing::{Division, TimeBase, Timing};
@@ -486,7 +602,7 @@ mod tests {
             wet: 1.,
         });
         let mut output = DelaySource::new(source, fx, DelayRing::new(1000, 4).unwrap())
-            .with_cue_controls(controls, 1);
+            .with_route(crate::fx_chain::AuxRoute::deck(controls, 1));
         assert_eq!(
             (output.next(), output.next(), output.next(), output.next()),
             (Some(0.), Some(0.), Some(1.), Some(-0.5))
@@ -513,7 +629,7 @@ mod tests {
             fx.clone(),
             DelayRing::new(1000, 4).unwrap(),
         )
-        .with_cue_controls(controls.clone(), 1);
+        .with_route(crate::fx_chain::AuxRoute::deck(controls.clone(), 1));
         for _ in 0..80 {
             assert_eq!(legacy.next(), Some(0.));
         }
@@ -529,7 +645,7 @@ mod tests {
             fx,
             DelayRing::new(1000, 4).unwrap(),
         )
-        .with_cue_controls(controls.clone(), 1);
+        .with_route(crate::fx_chain::AuxRoute::deck(controls.clone(), 1));
         for _ in 0..40 {
             assert_eq!(
                 (source.next(), source.next(), source.next(), source.next()),
@@ -647,10 +763,12 @@ mod tests {
         assert_eq!(source.next(), Some(0.));
         let control = DelayControl::new();
         let ring = DelayRing::new(48000, 1).unwrap();
+        let memory = ring.retain_memory();
+        let allocation = ring.samples.as_ptr();
         let mut source = DelaySource::new(
             rodio::source::SineWave::new(440.),
             Arc::clone(&control),
-            Arc::clone(&ring),
+            ring,
         );
         let stats = crate::looping::measured_heap(|| {
             for _ in 0..20000 {
@@ -661,6 +779,7 @@ mod tests {
         assert_eq!(stats.allocations, 0);
         assert_eq!(stats.reallocations, 0);
         assert_eq!(stats.deallocations, 0);
+        assert_eq!(memory.0.get().unwrap().as_ptr(), allocation);
         assert!(DelayRing::new(u32::MAX, 32).is_err());
     }
 }

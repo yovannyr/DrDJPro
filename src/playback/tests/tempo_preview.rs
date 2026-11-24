@@ -149,6 +149,7 @@ fn preview_decode_limits_storage_and_honours_cancel_and_eof() {
 fn d04_equal_duration_headphone_switching_load() {
     let file = wav_file(4096, 96_000);
     let clip = PreviewClip::open(file.path(), Duration::ZERO, &Cancellation::default()).unwrap();
+    let mut phases = Vec::with_capacity(2);
     for active in [false, true] {
         eprintln!("D04 preview active={active}");
         let (begin, ready) =
@@ -199,10 +200,11 @@ fn d04_equal_duration_headphone_switching_load() {
             eprintln!("D04 control-thread switches={switches}");
             result
         });
-        assert_eq!(
-            result,
-            (0, 0, 0, 0),
-            "D04 render overruns, deadlines, invalid output, allocations"
-        );
+        phases.push(result);
     }
+    assert_eq!(
+        phases,
+        [(0, 0, 0, 0); 2],
+        "reference and load: D04 render overruns, deadlines, invalid output, allocations"
+    );
 }

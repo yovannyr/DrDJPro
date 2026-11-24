@@ -42,6 +42,63 @@ impl HotCue {
 pub struct HotCues {
     slots: [Option<HotCue>; SLOT_COUNT],
 }
+
+/// Snapshot of the edited slot and the musical references actually used by the draft.
+#[derive(Clone)]
+pub(crate) struct CueTrimChange {
+    pub slot: usize,
+    pub original: HotCue,
+    pub reference: Option<(usize, HotCue)>,
+    /// None for free moves; Some(None) explicitly expects a track without a saved grid.
+    pub expected_grid: Option<Option<crate::beatgrid::BeatGrid>>,
+    pub position: Duration,
+}
+
+impl CueTrimChange {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.slot >= SLOT_COUNT
+            || self
+                .reference
+                .as_ref()
+                .is_some_and(|(slot, _)| *slot >= SLOT_COUNT || *slot == self.slot)
+        {
+            return Err("Choose two different, valid cue slots for a cue reference".into());
+        }
+        if self.position > MAX_POSITION {
+            return Err("Cue position exceeds seven days".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check(
+        &self,
+        cues: &HotCues,
+        grid: Option<crate::beatgrid::BeatGrid>,
+    ) -> Result<(), String> {
+        self.validate()?;
+        if cues.slots()[self.slot].as_ref() != Some(&self.original) {
+            return Err("The edited cue changed. Reopen the cue editor.".into());
+        }
+        if self
+            .reference
+            .as_ref()
+            .is_some_and(|(slot, cue)| cues.slots()[*slot].as_ref() != Some(cue))
+        {
+            return Err("The reference cue changed. Choose the reference again.".into());
+        }
+        if self.expected_grid.is_some_and(|expected| expected != grid) {
+            return Err("The beatgrid changed. Reopen the cue editor.".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn replacement(&self) -> HotCue {
+        HotCue {
+            position: self.position,
+            ..self.original.clone()
+        }
+    }
+}
 impl HotCues {
     /// Zero-based fixed slots; clearing never shifts another cue's identity.
     pub fn set(&mut self, slot: usize, cue: Option<HotCue>) -> Result<(), String> {

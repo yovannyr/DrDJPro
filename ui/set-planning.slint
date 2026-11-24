@@ -1,0 +1,154 @@
+import { Button, CheckBox, LineEdit, ListView, SpinBox } from "std-widgets.slint";
+import { DjTheme } from "theme.slint";
+import { LibraryButton } from "controls.slint";
+
+export component SetPlanningWindow inherits Window {
+    title: "Set planning";
+    preferred-width: 690px; preferred-height: 510px;
+    min-width: 480px; min-height: 330px;
+    background: DjTheme.app-bg;
+    in property <string> anchor-label;
+    in property <[string]> rows;
+    in property <string> status;
+    callback set-anchor();
+    callback open-hook-marks();
+    callback open-package();
+    callback open-project();
+    callback open-passages();
+    callback open-midi-scene();
+    callback search-variants(int, string);
+    in property <string> destination-label;
+    in property <[string]> bridge-rows;
+    in property <int> bridge-index: -1;
+    in property <string> bridge-status;
+    in property <bool> bridge-route;
+    in property <bool> bridge-can-audition-ab;
+    in property <bool> bridge-can-audition-bc;
+    callback set-destination();
+    callback search-bridges(bool, string, bool, int);
+    callback select-bridge(int);
+    callback audition-bridge(bool);
+    callback stop-bridge();
+    callback invalidate-bridges();
+    callback dismiss();
+    private property <bool> bridges;
+    private property <int> variant-limit: 2;
+    private property <string> variant-seed: "1";
+    private property <bool> require-bpm: true;
+    private property <string> max-bpm: "8";
+    private property <bool> require-key: true;
+    private property <int> max-semitones: 2;
+    private property <[string]> result-rows: root.bridges ? root.bridge-rows : root.rows;
+    changed bridges => { if !root.bridges { root.stop-bridge(); } }
+    changed require-bpm => { root.invalidate-bridges(); }
+    changed max-bpm => { root.invalidate-bridges(); }
+    changed require-key => { root.invalidate-bridges(); }
+    changed max-semitones => { root.invalidate-bridges(); }
+
+    VerticalLayout {
+        padding: 14px; spacing: 9px;
+        HorizontalLayout {
+            spacing: 5px;
+            LibraryButton { text: "Key variants"; active: !root.bridges; clicked => { root.bridges = false; } }
+            LibraryButton { text: "Bridge tracks"; active: root.bridges; clicked => { root.bridges = true; } }
+            Rectangle { horizontal-stretch: 1; }
+            LibraryButton { text: "Close"; accessible-label: "Close set planning"; clicked => { root.dismiss(); } }
+        }
+        HorizontalLayout {
+            spacing: 5px;
+            LibraryButton { text: "Wordplay"; clicked => { root.open-hook-marks(); } }
+            LibraryButton { text: "Portable sets"; clicked => { root.open-package(); } }
+            LibraryButton { text: "Passages"; clicked => { root.open-passages(); } }
+            LibraryButton { text: "Timeline"; clicked => { root.open-project(); } }
+            LibraryButton { text: "MIDI scene editor"; clicked => { root.open-midi-scene(); } }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 7px;
+            Text { text: root.bridges ? "Start A" : "Anchor track"; color: DjTheme.text-secondary; vertical-alignment: center; }
+            Text {
+                text: root.anchor-label == "" ? "Choose a track in the library" : root.anchor-label;
+                color: DjTheme.text-primary; horizontal-stretch: 1; vertical-alignment: center; overflow: elide;
+                accessible-role: text; accessible-label: "Anchor track"; accessible-description: self.text;
+            }
+            Button {
+                text: "Use selected track"; accessible-label: "Use selected library track as anchor";
+                clicked => { root.set-anchor(); }
+            }
+        }
+        if root.bridges : HorizontalLayout {
+            spacing: 7px;
+            Text { text: "Destination C"; color: DjTheme.text-secondary; vertical-alignment: center; }
+            Text {
+                text: root.destination-label == "" ? "Choose another track in the library" : root.destination-label;
+                color: DjTheme.text-primary; horizontal-stretch: 1; vertical-alignment: center; overflow: elide;
+                accessible-role: text; accessible-label: "Destination track"; accessible-description: self.text;
+            }
+            Button { text: "Use selected track"; accessible-label: "Use selected library track as destination"; clicked => { root.set-destination(); } }
+        }
+        if !root.bridges : HorizontalLayout {
+            spacing: 7px;
+            Text { text: "Max semitones"; color: DjTheme.text-primary; vertical-alignment: center; }
+            limit := SpinBox {
+                minimum: 0; maximum: 6; value <=> root.variant-limit; width: 72px;
+                accessible-label: "Maximum absolute transposition in semitones";
+            }
+            Text { text: "Seed"; color: DjTheme.text-primary; vertical-alignment: center; }
+            seed := LineEdit {
+                text <=> root.variant-seed; width: 85px; accessible-label: "Variant search seed";
+                accepted => { root.search-variants(limit.value, self.text); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: "Find variants"; accessible-label: "Find transposition variants";
+                clicked => { root.search-variants(limit.value, seed.text); }
+            }
+        }
+        if root.bridges : HorizontalLayout {
+            spacing: 5px;
+            CheckBox { text: "Max BPM Δ"; checked <=> root.require-bpm; accessible-label: "Require maximum BPM difference on both transitions"; }
+            LineEdit { width: 48px; text <=> root.max-bpm; enabled: root.require-bpm; accessible-label: "Maximum BPM difference"; }
+            CheckBox { text: "Max semitones"; checked <=> root.require-key; accessible-label: "Require maximum transposition on both transitions"; }
+            SpinBox { width: 66px; minimum: 0; maximum: 6; value <=> root.max-semitones; enabled: root.require-key; accessible-label: "Maximum bridge transposition in semitones"; }
+            Rectangle { horizontal-stretch: 1; }
+            Button { text: "Find bridges"; clicked => { root.search-bridges(root.require-bpm, root.max-bpm, root.require-key, root.max-semitones); } }
+        }
+        results := ListView {
+            vertical-stretch: 1; accessible-label: root.bridges ? "Bridge candidates and both transition assessments" : "Transposition variants";
+            for row[i] in root.result-rows : Rectangle {
+                background: root.bridges && i == root.bridge-index ? DjTheme.selection-bg : (mod(i, 2) == 0 ? DjTheme.panel-bg : DjTheme.panel-dark);
+                height: max(35px, content.preferred-height + 12px);
+                content := Text {
+                    x: 7px; y: 6px; width: max(0px, parent.width - 14px);
+                    text: row; color: DjTheme.text-primary; wrap: word-wrap;
+                    accessible-role: text; accessible-label: row;
+                }
+                if root.bridges : FocusScope {
+                    accessible-role: button; accessible-label: row;
+                    accessible-action-default => { root.select-bridge(i); }
+                    Rectangle {
+                        width: parent.width; height: parent.height;
+                        border-color: DjTheme.focus-border; border-width: parent.has-focus ? 1px : 0px;
+                    }
+                    key-pressed(event) => {
+                        if event.text == Key.Space || event.text == Key.Return { root.select-bridge(i); return accept; }
+                        return reject;
+                    }
+                    TouchArea { clicked => { parent.focus(); root.select-bridge(i); } }
+                }
+            }
+        }
+        if root.bridges : HorizontalLayout {
+            spacing: 5px;
+            Button { text: "Hear A → B"; enabled: root.bridge-route && root.bridge-can-audition-ab; accessible-label: "Audition start to bridge in headphones"; clicked => { root.audition-bridge(false); } }
+            Button { text: "Hear B → C"; enabled: root.bridge-route && root.bridge-can-audition-bc; accessible-label: "Audition bridge to destination in headphones"; clicked => { root.audition-bridge(true); } }
+            Button { text: "Stop"; accessible-label: "Stop bridge audition"; clicked => { root.stop-bridge(); } }
+            if !root.bridge-route : Text { text: "PFL needs separate headphones"; color: DjTheme.text-secondary; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        Text {
+            text: root.bridges ? root.bridge-status : root.status; color: DjTheme.text-secondary; wrap: word-wrap;
+            accessible-role: text; accessible-label: "Set planning status"; accessible-description: self.text;
+        }
+    }
+}

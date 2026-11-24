@@ -5,8 +5,10 @@ import { LibraryButton } from "controls.slint";
 import { ImportReviewRow, ImportReviewPanel } from "import-review.slint";
 import { MetadataDiagnosisView, MetadataDiagnosisPanel } from "metadata-diagnosis.slint";
 import { GigRuleView, GigPlanningPanel } from "gig-planning.slint";
+import { ChordPairPanel, ChordPairSettings, ChordPairRow } from "chord-pair.slint";
 import { LocalKeysPanel } from "local-keys.slint";
 import { ClipCheckPanel } from "clip-check.slint";
+import { CueTrimPanel } from "cue-trim.slint";
 
 export component CratePanel inherits Rectangle {
     in property <bool> managing;
@@ -28,6 +30,7 @@ export component CratePanel inherits Rectangle {
     callback new-crate(); callback new-smart-crate(); callback new-subcrate(); callback rename-crate(); callback delete-crate();
     callback save-name(); callback cancel-dialog(); callback confirm-delete();
     callback add-track(); callback remove-track();
+    callback open-crate-order();
     background: #111111; border-color: #333333; border-width: 1px;
     VerticalLayout {
         padding: 3px; spacing: 2px;
@@ -48,6 +51,10 @@ export component CratePanel inherits Rectangle {
                 }
                 TouchArea { enabled: !root.busy; clicked => { root.select-crate(entry.id); } }
             }
+        }
+        if root.selection > 0 && !root.selected-smart : LibraryButton {
+            text: "Arrange setlist"; accessible-label: "Preview and arrange the selected crate";
+            enabled: !root.busy; clicked => { root.open-crate-order(); }
         }
         if root.managing : HorizontalLayout {
             LibraryButton { text: "+"; accessible-label: "New crate"; enabled: !busy; clicked => { root.new-crate(); } }
@@ -245,6 +252,44 @@ export component TrackLibrary inherits Rectangle {
     in property <TempoComparisonView> tempo-comparison;
     callback open-tempo-comparison();
     in property <MetadataDiagnosisView> metadata-diagnosis;
+    in property <bool> cue-trim-open;
+    in property <bool> cue-trim-busy;
+    in property <bool> cue-trim-route;
+    in property <int> cue-trim-track: -1;
+    in property <[string]> cue-trim-slots;
+    in property <int> cue-trim-slot: -1;
+    in property <int> cue-trim-reference: -2;
+    in property <int> cue-trim-suggested: -1;
+    in property <string> cue-trim-position;
+    in property <string> cue-trim-status;
+    callback open-cue-trim();
+    callback open-set-planning();
+    callback close-cue-trim();
+    callback select-cue-trim-slot(int);
+    callback select-cue-trim-reference(int);
+    callback move-cue-trim(int);
+    callback set-cue-trim-position(string);
+    callback audition-cue-trim();
+    callback stop-cue-trim();
+    callback save-cue-trim();
+    in property <bool> chord-pair-open;
+    in property <bool> chord-pair-busy;
+    in property <bool> chord-pair-route;
+    in property <string> chord-pair-a;
+    in property <string> chord-pair-b;
+    in property <string> chord-pair-status;
+    in property <[ChordPairRow]> chord-pair-rows;
+    in property <int> chord-pair-index: -1;
+    callback open-chord-pair();
+    callback close-chord-pair();
+    callback use-chord-track(int);
+    callback compare-chord-pair(ChordPairSettings);
+    callback select-chord-row(int);
+    callback confirm-chord-event(int, string);
+    callback export-chord-midi(int);
+    callback audition-chord-pair();
+    callback stop-chord-pair();
+    out property <bool> chord-pair-text-focused: chord-editor.editing;
     in property <bool> local-keys-open;
     out property <bool> local-key-text-focused: key-panel.editing;
     in property <bool> local-keys-busy;
@@ -294,6 +339,10 @@ export component TrackLibrary inherits Rectangle {
     in property <string> analysis-title;
     in property <string> analysis-summary;
     in property <[float]> analysis-waveform;
+    in property <[float]> layer-percussion;
+    in property <[float]> layer-tonal;
+    in property <string> layer-status;
+    in-out property <bool> split-waveform;
     in property <bool> can-analyze;
     in property <string> analysis-progress;
     in property <bool> analysis-running;
@@ -377,7 +426,7 @@ export component TrackLibrary inherits Rectangle {
             text: "Crates: select on the left; + / + Sub / + Smart create groups. Add / Remove manage the selected track.";
             color: #bbbbbb; font-size: 11px; wrap: word-wrap;
         }
-        if tab == 4 && !root.diagnosis-visible && !root.gig-visible && !root.clip-check-open && !root.local-keys-open : VerticalLayout {
+        if tab == 4 && !root.diagnosis-visible && !root.gig-visible && !root.clip-check-open && !root.local-keys-open && !root.chord-pair-open && !root.cue-trim-open : VerticalLayout {
             spacing: 2px;
             if root.analysis-progress != "" : Text { height: 14px; text: root.analysis-progress; accessible-role: text; accessible-label: "Library analysis progress"; accessible-description: root.analysis-progress; font-size: 11px; color: #cccccc; overflow: elide; }
             HorizontalLayout {
@@ -418,6 +467,25 @@ export component TrackLibrary inherits Rectangle {
                     text: "Local keys"; accessible-label: "Inspect local key changes";
                     enabled: root.selection > 0;
                     clicked => { root.open-local-keys(); }
+                }
+                LibraryButton {
+                    text: "Chord pair"; accessible-label: "Compare two chord passages";
+                    enabled: root.selection > 0;
+                    clicked => { root.open-chord-pair(); }
+                }
+                LibraryButton {
+                    text: "Cue trim"; accessible-label: "Fine-tune a hot cue";
+                    enabled: root.selection > 0;
+                    clicked => { root.open-cue-trim(); }
+                }
+                LibraryButton {
+                    text: "Set planning"; accessible-label: "Open set planning";
+                    clicked => { root.open-set-planning(); }
+                }
+                LibraryButton {
+                    text: root.split-waveform ? "Regular waveform" : "Percussive / tonal";
+                    accessible-label: "Switch Prepare waveform layers"; enabled: root.selection > 0 || root.split-waveform;
+                    clicked => { root.split-waveform = !root.split-waveform; }
                 }
                 Rectangle { horizontal-stretch: 1; }
             }
@@ -495,7 +563,22 @@ export component TrackLibrary inherits Rectangle {
                 cancel-comparison => { root.cancel-tempo-comparison(); }
                 toggle-lock => { root.toggle-tempo-grid-lock(); }
             }
-            if root.analysis-waveform.length > 0 : Rectangle {
+            if root.split-waveform : Text { height: 14px; text: root.layer-status; color: DjTheme.text-secondary; overflow: elide; }
+            if root.split-waveform && root.layer-percussion.length > 0 : Rectangle {
+                height: 24px; background: #0a0a0a; accessible-role: image; accessible-label: "Percussive and tonal energy on the track timeline";
+                for peak[i] in root.layer-percussion : Rectangle {
+                    x: i * parent.width / max(1, root.layer-percussion.length);
+                    width: max(1px, parent.width / max(1,root.layer-percussion.length));
+                    height: peak * parent.height / 2;
+                    y: parent.height / 2 - self.height; background: #f5a94c;
+                }
+                for peak[i] in root.layer-tonal : Rectangle {
+                    x: i * parent.width / max(1,root.layer-tonal.length);
+                    width: max(1px, parent.width / max(1,root.layer-tonal.length));
+                    height: peak * parent.height / 2; y: parent.height / 2; background: #5ddbd4;
+                }
+            }
+            if root.analysis-waveform.length > 0 && (!root.split-waveform || root.layer-percussion.length == 0) : Rectangle {
                 height: 20px; background: #0a0a0a;
                 for peak[index] in root.analysis-waveform : Rectangle {
                     x: index * parent.width / root.analysis-waveform.length;
@@ -505,6 +588,34 @@ export component TrackLibrary inherits Rectangle {
                     background: #209ac4;
                 }
             }
+        }
+        CueTrimPanel {
+            visible: root.cue-trim-open && root.cue-trim-track == root.selection;
+            busy: root.cue-trim-busy; route: root.cue-trim-route;
+            slots: root.cue-trim-slots; slot: root.cue-trim-slot;
+            reference: root.cue-trim-reference; suggested: root.cue-trim-suggested;
+            position-seconds: root.cue-trim-position; status: root.cue-trim-status;
+            select-slot(i) => { root.select-cue-trim-slot(i); }
+            select-reference(i) => { root.select-cue-trim-reference(i); }
+            move-step(direction) => { root.move-cue-trim(direction); }
+            set-position(seconds) => { root.set-cue-trim-position(seconds); }
+            audition => { root.audition-cue-trim(); }
+            stop => { root.stop-cue-trim(); }
+            save => { root.save-cue-trim(); }
+            close => { root.close-cue-trim(); root.focus-tracks(); }
+        }
+        chord-editor := ChordPairPanel {
+            visible: root.chord-pair-open; busy: root.chord-pair-busy; route: root.chord-pair-route;
+            a: root.chord-pair-a; b: root.chord-pair-b; has-selection: root.selection > 0;
+            status: root.chord-pair-status; rows: root.chord-pair-rows; index: root.chord-pair-index;
+            use-track(side) => { root.use-chord-track(side); }
+            compare(settings) => { root.compare-chord-pair(settings); }
+            select-row(index) => { root.select-chord-row(index); }
+            confirm(side, label) => { root.confirm-chord-event(side, label); }
+            audition => { root.audition-chord-pair(); }
+            export-midi(side)=>{root.export-chord-midi(side);}
+            stop => { root.stop-chord-pair(); }
+            close => { root.close-chord-pair(); root.focus-tracks(); }
         }
         key-panel := LocalKeysPanel {
             visible: root.local-keys-open;
@@ -554,7 +665,8 @@ export component TrackLibrary inherits Rectangle {
         table-scroll := Flickable {
           interactive: false;
           content-x <=> root.table-scroll-x;
-          min-width: 0px; min-height: 22px; vertical-stretch: 1;
+          // The column header and one selectable 22px row must fit together.
+          min-width: 0px; min-height: 46px; vertical-stretch: 1;
           content-width: max(self.width, root.table-width * 1px);
           content-height: self.height;
           VerticalLayout {
@@ -573,6 +685,7 @@ export component TrackLibrary inherits Rectangle {
         nav := FocusScope {
             min-height: 22px; vertical-stretch: 1;
             key-pressed(event) => {
+                if root.cue-trim-open { return reject; }
                 if event.text == Key.DownArrow { root.move-selection(1); return accept; }
                 if event.text == Key.UpArrow { root.move-selection(-1); return accept; }
                 return reject;

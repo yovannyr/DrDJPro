@@ -58,6 +58,7 @@ fn gig_cycle(library: &mut Library, store: &Worker, gigs: [i32; 2], track: i32, 
 fn r02_equal_duration_gig_changes_with_two_playing_decks() {
     let track_file = wav_file(4096, 4800);
     let path = track_file.path().canonicalize().unwrap();
+    let mut phases = Vec::with_capacity(2);
     for active in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("gig-measurement.sqlite3");
@@ -121,10 +122,11 @@ fn r02_equal_duration_gig_changes_with_two_playing_decks() {
             "R02 completed and acknowledged gig changes={cycles}, persisted plays={}",
             history.first().map_or(0, |entry| entry.play_count)
         );
-        assert_eq!(
-            result,
-            (0, 0, 0, 0),
-            "render overruns, missed deadlines, bad signal blocks, allocations"
-        );
+        phases.push(result);
     }
+    assert_eq!(
+        phases,
+        [(0, 0, 0, 0); 2],
+        "reference and load: render overruns, missed deadlines, bad signal blocks, allocations"
+    );
 }

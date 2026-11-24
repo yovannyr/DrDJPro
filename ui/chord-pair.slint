@@ -1,0 +1,151 @@
+import { LineEdit, ListView } from "std-widgets.slint";
+import { LibraryButton } from "controls.slint";
+import { DjTheme } from "theme.slint";
+
+export struct ChordPairRow { time: string, a: string, b: string }
+export struct ChordPairSettings {
+    start-a: string, start-b: string, length: string, offset-b: string,
+    tempo-a: string, tempo-b: string, pitch-a: string, pitch-b: string,
+}
+
+component SourceRow inherits HorizontalLayout {
+    in property <string> side;
+    in property <string> title;
+    in property <bool> can-pin;
+    in-out property <string> start-text: "0";
+    in-out property <string> tempo-text: "1";
+    in-out property <string> pitch-text: "0";
+    out property <bool> editing: start.has-focus || tempo.has-focus || pitch.has-focus;
+    callback use-selection();
+    callback draft-changed();
+    spacing: 3px;
+    LibraryButton { text: "Pick " + root.side + "…"; accessible-label: "Choose library track for " + root.side; enabled: root.can-pin; clicked => { root.use-selection(); } }
+    Text { text: root.title == "" ? "Select a track" : root.title; horizontal-stretch: 1; overflow: elide; color: DjTheme.text-primary; vertical-alignment: center; }
+    Text { text: "Start (s)"; color: DjTheme.text-secondary; vertical-alignment: center; }
+    start := LineEdit { width: 54px; height: 23px; accessible-label: root.side + " passage start seconds"; text <=> root.start-text; edited => { root.draft-changed(); } }
+    Text { text: "Tempo ×"; color: DjTheme.text-secondary; vertical-alignment: center; }
+    tempo := LineEdit { width: 43px; height: 23px; accessible-label: root.side + " tempo factor"; text <=> root.tempo-text; edited => { root.draft-changed(); } }
+    Text { text: "Pitch (st)"; color: DjTheme.text-secondary; vertical-alignment: center; }
+    pitch := LineEdit { width: 36px; height: 23px; accessible-label: root.side + " pitch semitones"; text <=> root.pitch-text; edited => { root.draft-changed(); } }
+}
+
+export component ChordPairPanel inherits Rectangle {
+    in property <string> a;
+    in property <string> b;
+    in property <bool> has-selection;
+    in property <bool> busy;
+    in property <bool> route;
+    in property <string> status;
+    in property <[ChordPairRow]> rows;
+    in property <int> index: -1;
+    out property <bool> editing: root.visible && (root.results ? correction.has-focus : (side-a.editing || side-b.editing || length.has-focus || offset.has-focus));
+    callback use-track(int);
+    callback compare(ChordPairSettings);
+    callback select-row(int);
+    callback confirm(int, string);
+    callback export-midi(int);
+    callback audition();
+    callback stop();
+    callback close();
+    private property <bool> results;
+    private property <int> picking: -1;
+    private property <bool> usable: root.results && !root.busy && root.rows.length > 0;
+    changed visible => {
+        if !root.visible {
+            root.results = false; root.picking = -1;
+            side-a.start-text = "0"; side-b.start-text = "0";
+            side-a.tempo-text = "1"; side-b.tempo-text = "1";
+            side-a.pitch-text = "0"; side-b.pitch-text = "0";
+            length.text = "8"; offset.text = "0"; correction.text = "";
+        }
+    }
+    changed index => { correction.text = ""; }
+    background: DjTheme.panel-dark; accessible-role: groupbox; accessible-label: "Chord passage comparison";
+    min-height: root.visible ? (root.picking >= 0 ? 34px : 112px) : 0px;
+    preferred-height: root.visible ? (root.picking >= 0 ? 40px : 132px) : 0px;
+    max-height: root.visible ? (root.picking >= 0 ? 48px : 144px) : 0px;
+    VerticalLayout {
+        padding: 3px; spacing: 2px;
+        form := VerticalLayout {
+            visible: !root.results && root.picking < 0;
+            min-height: self.visible ? 76px : 0px; max-height: self.visible ? 84px : 0px;
+            spacing: 2px;
+            side-a := SourceRow {
+                side: "A"; title: root.a; can-pin: root.has-selection;
+                use-selection => { root.stop(); root.picking = 0; } draft-changed => { root.stop(); }
+            }
+            side-b := SourceRow {
+                side: "B"; title: root.b; can-pin: root.has-selection;
+                use-selection => { root.stop(); root.picking = 1; } draft-changed => { root.stop(); }
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                Text { text: "Window (s)"; color: DjTheme.text-primary; vertical-alignment: center; }
+                length := LineEdit { width: 46px; height: 23px; text: "8"; accessible-label: "Mix window seconds"; edited => { root.stop(); } }
+                Text { text: "B offset (s)"; color: DjTheme.text-primary; vertical-alignment: center; }
+                offset := LineEdit { width: 46px; height: 23px; text: "0"; accessible-label: "B mix offset seconds"; edited => { root.stop(); } }
+                LibraryButton {
+                    text: "Compare"; enabled: root.a != "" && root.b != "" && !root.busy;
+                    accessible-label: "Analyze both chord passages";
+                    clicked => {
+                        root.results = true; correction.text = "";
+                        root.compare({start-a: side-a.start-text, start-b: side-b.start-text, length: length.text, offset-b: offset.text,
+                            tempo-a: side-a.tempo-text, tempo-b: side-b.tempo-text, pitch-a: side-a.pitch-text, pitch-b: side-b.pitch-text});
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                LibraryButton { text: "Close"; accessible-label: "Close chord passage setup"; clicked => { root.close(); } }
+            }
+        }
+        if root.picking >= 0 : HorizontalLayout {
+            spacing: 4px;
+            Text { text: "Select a track in the library"; color: DjTheme.text-primary; vertical-alignment: center; }
+            LibraryButton {
+                text: root.picking == 0 ? "Use as A" : "Use as B"; accessible-label: root.picking == 0 ? "Use selected track as A" : "Use selected track as B";
+                enabled: root.has-selection; clicked => { root.use-track(root.picking); root.picking = -1; }
+            }
+            LibraryButton { text: "Back"; accessible-label: "Cancel chord track selection"; clicked => { root.picking = -1; } }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        timeline := ListView {
+            visible: root.results;
+            min-height: self.visible ? 42px : 0px; max-height: self.visible ? 72px : 0px;
+            vertical-stretch: 1; accessible-label: "Aligned chord passages";
+            for r[i] in root.rows : Rectangle {
+                height: 22px;
+                background: i == root.index ? DjTheme.selection-bg : DjTheme.control-bg;
+                accessible-role: button; accessible-label: "Chord interval " + (i + 1);
+                accessible-description: r.time + " · A " + r.a + " · B " + r.b;
+                accessible-action-default => { root.select-row(i); }
+                HorizontalLayout {
+                    spacing: 5px; padding-left: 3px;
+                    Text { text: r.time; color: DjTheme.text-primary; width: 99px; overflow: elide; }
+                    Text { text: "A · " + r.a; color: DjTheme.text-primary; horizontal-stretch: 1; overflow: elide; }
+                    Text { text: "B · " + r.b; color: DjTheme.text-primary; horizontal-stretch: 1; overflow: elide; }
+                }
+                TouchArea { clicked => { root.select-row(i); } }
+            }
+        }
+        edit := HorizontalLayout {
+            visible: root.results;
+            min-height: self.visible ? 22px : 0px; max-height: self.visible ? 26px : 0px;
+            spacing: 3px;
+            LibraryButton { text: "‹"; accessible-label: "Previous chord interval"; enabled: root.usable && root.index > 0; clicked => { root.select-row(root.index - 1); } }
+            LibraryButton { text: "›"; accessible-label: "Next chord interval"; enabled: root.usable && root.index + 1 < root.rows.length; clicked => { root.select-row(root.index + 1); } }
+            correction := LineEdit { height: 23px; placeholder-text: "Source chord or Unknown"; accessible-label: "Correct original source chord"; }
+            LibraryButton { text: "Confirm A"; accessible-label: "Confirm A source chord"; enabled: root.usable && root.index >= 0; clicked => { root.confirm(0, correction.text); } }
+            LibraryButton { text: "Confirm B"; accessible-label: "Confirm B source chord"; enabled: root.usable && root.index >= 0; clicked => { root.confirm(1, correction.text); } }
+        }
+        if root.results : HorizontalLayout {
+            spacing: 3px;
+            LibraryButton { text: "Setup"; accessible-label: "Edit chord comparison timing"; clicked => { root.stop(); root.results = false; } }
+            LibraryButton { text: "Hear pair"; accessible-label: "Audition chord pair in headphones"; enabled: root.usable && root.route; clicked => { root.audition(); } }
+            LibraryButton { text:"MIDI A";accessible-label:"Export confirmed chords from source passage A";enabled:root.usable;clicked=>{root.export-midi(0);} }
+            LibraryButton { text:"MIDI B";accessible-label:"Export confirmed chords from source passage B";enabled:root.usable;clicked=>{root.export-midi(1);} }
+            LibraryButton { text: "Stop"; accessible-label: "Stop chord pair audition"; enabled: root.route; clicked => { root.stop(); } }
+            Rectangle { horizontal-stretch: 1; }
+            LibraryButton { text: "Close"; accessible-label: "Close chord comparison timeline"; clicked => { root.close(); } }
+        }
+        if root.picking < 0 : Text { text: root.status; color: DjTheme.text-secondary; overflow: elide; font-size: 11px; accessible-role: text; accessible-label: "Chord comparison status"; accessible-description: self.text; }
+    }
+}

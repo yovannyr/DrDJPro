@@ -1,8 +1,10 @@
+import { SectionJumpMarker } from "section-jump.slint";
 // Generated with the full local GUI input; input handlers are retained.
 import { Button, Slider, SpinBox, LineEdit, ListView, ComboBox, CheckBox } from "std-widgets.slint";
 import { DjTheme, DeckSlotData, LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, LibraryRow, TableColumn, DeckView, SamplerRow } from "theme.slint";
 
 export component WaveformStrip inherits Rectangle {
+    in property <float> section-mark: -1;
     in property <string> deck-label;
     in property <bool> overview;
     in property <brush> accent;
@@ -93,6 +95,7 @@ export component WaveformStrip inherits Rectangle {
         x: clamp(marker, 0, 100) / 100 * max(0px, parent.width - self.width);
         width: 2px; height: parent.height; background: #ffffff;
     }
+    SectionJumpMarker { width: parent.width; height: parent.height; target: root.section-mark; source-start: root.range-start / 100; source-end: root.range-end / 100; deck-label: root.deck-label; }
     zoom-keys := FocusScope {
         width: 0;
         enabled: root.enabled && root.keyboard-zoom;
@@ -128,6 +131,7 @@ export component WaveformStrip inherits Rectangle {
 }
 
 export component DetailWaveform inherits Rectangle {
+    in property <float> section-mark: -1;
     in property <string> deck-label;
     in property <brush> accent;
     in property <[float]> detail;
@@ -239,6 +243,7 @@ export component DetailWaveform inherits Rectangle {
                 }
             }
             min-height: 36px; preferred-height: 82px; max-height: 108px; vertical-stretch: 1;
+            section-mark: root.section-mark;
             overview: false; deck-label: root.deck-label; accent: root.accent;
             values: root.detail; colors: root.colors; hot-cues: root.hot-cues; loop-range: root.loop-range; beats: root.beats; enabled: root.enabled;
             position: root.position; marker: root.marker; range-start: root.detail-start; range-end: root.detail-end;

@@ -1,10 +1,17 @@
 //! SQLite catalog storage. The worker owns every database/file operation.
+mod chords;
+mod crate_order;
+mod cue_trim;
 mod gigs;
+pub(crate) mod hooks;
 mod local_keys;
+pub(crate) mod portable;
 mod prepare_grid;
+mod sampler_patterns;
 use crate::library::{self, Catalog, Library, SavedTrack};
 use crate::output_preferences::{OutputRoute, OutputRoutes, MAX_ROUTES_BYTES};
 use crate::preferences::QuantizePreferences;
+pub(crate) use chords::ChordConfirmations;
 pub(crate) use local_keys::LocalKeyCache;
 use prepare_grid::PrepareGridWrite;
 const OUTPUT_ROUTES_QUERY:&str="SELECT CASE WHEN length(CAST(value AS BLOB))<=65536 THEN value ELSE '' END FROM library_meta WHERE key='audio_output_routes_v1'";
@@ -23,7 +30,7 @@ use std::{
     time::{Duration, Instant},
 };
 const APPLICATION_ID: i32 = 0x4452444a;
-const SCHEMA_VERSION: i32 = 22;
+const SCHEMA_VERSION: i32 = 26;
 const DECK_SESSION_QUERY: &str = "SELECT CASE WHEN length(CAST(value AS BLOB))<=256 THEN value ELSE '' END FROM library_meta WHERE key='deck_session_v1'";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -904,6 +911,7 @@ fn write_crates(
                 .map_err(|e| e.to_string())?;
         }
     }
+    connection.execute("DELETE FROM crate_set_order WHERE NOT EXISTS(SELECT 1 FROM crate_tracks m WHERE m.crate_id=crate_set_order.crate_id AND m.track_id=crate_set_order.track_id)", []).map_err(|e| e.to_string())?;
     connection.execute("INSERT INTO library_meta(key,value) VALUES('last_crate_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[catalog.last_id.to_string()]).map_err(|e|e.to_string())?;
     Ok(())
 }
@@ -1083,6 +1091,10 @@ fn initialize(connection: &mut Connection, catalog: &Catalog, source: &str) -> R
     create_prep_schema(&transaction)?;
     gigs::schema(&transaction)?;
     local_keys::schema(&transaction)?;
+    chords::schema(&transaction)?;
+    crate_order::schema(&transaction)?;
+    hooks::schema(&transaction)?;
+    portable::schema(&transaction)?;
     transaction
         .pragma_update(None, "application_id", APPLICATION_ID)
         .map_err(|e| e.to_string())?;
@@ -1182,7 +1194,7 @@ struct Store {
 }
 impl Store {
     fn read_sampler(&self) -> Result<crate::sampler::Preferences, String> {
-        let raw:Option<String>=self.connection.query_row("SELECT CASE WHEN length(CAST(value AS BLOB))<=16384 THEN value ELSE '' END FROM library_meta WHERE key='sampler_v1'",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+        let raw:Option<String>=self.connection.query_row("SELECT CASE WHEN length(CAST(value AS BLOB))<=65536 THEN value ELSE '' END FROM library_meta WHERE key='sampler_v1'",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
         let Some(raw) = raw else {
             return Ok(Default::default());
         };
@@ -1194,8 +1206,8 @@ impl Store {
     fn save_sampler(&mut self, prefs: &crate::sampler::Preferences) -> Result<(), String> {
         prefs.validate()?;
         let raw = serde_json::to_string(prefs).map_err(|e| e.to_string())?;
-        if raw.len() > 16384 {
-            return Err("Sampler bank exceeds16KiB".into());
+        if raw.len() > 65536 {
+            return Err("Sampler bank exceeds 64 KiB".into());
         }
         let tx = self
             .connection
@@ -1350,6 +1362,18 @@ impl Store {
             }
             if version < 22 {
                 local_keys::schema(&tx)?;
+            }
+            if version < 23 {
+                chords::schema(&tx)?;
+            }
+            if version < 24 {
+                crate_order::schema(&tx)?;
+            }
+            if version < 25 {
+                hooks::schema(&tx)?;
+            }
+            if version < 26 {
+                portable::schema(&tx)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)
                 .map_err(|e| e.to_string())?;
@@ -1776,6 +1800,8 @@ impl Store {
             }
             for (id, name, _, _) in changed.iter().rev() {
                 if name.is_none() {
+                    tx.execute("DELETE FROM crate_set_order WHERE crate_id=?1", [id])
+                        .map_err(|e| e.to_string())?;
                     tx.execute("DELETE FROM crates WHERE id=?1", [id])
                         .map_err(|e| e.to_string())?;
                 }
@@ -1811,6 +1837,13 @@ impl Store {
             };
             tx.execute(sql, rusqlite::params![crate_id, track_id])
                 .map_err(|e| e.to_string())?;
+            if !present {
+                tx.execute(
+                    "DELETE FROM crate_set_order WHERE crate_id=?1 AND track_id=?2",
+                    rusqlite::params![crate_id, track_id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
         }
         let mut history_ids = HashSet::new();
         for (track_id, entry) in &delta.history {
@@ -1918,6 +1951,7 @@ impl Store {
 }
 
 pub struct LoadedLibrary {
+    pub sampler_patterns: Result<crate::sampler::phrase::Patterns, String>,
     pub sampler_preferences: Result<crate::sampler::Preferences, String>,
     pub table_columns: Result<crate::table_columns::TableColumns, String>,
     pub startup_audio: Result<crate::audio_devices::StartupSelection, String>,
@@ -1931,15 +1965,21 @@ pub struct LoadedLibrary {
     pub output_routes: Result<OutputRoutes, String>,
 }
 pub enum Event {
-    SamplerSaved(Result<crate::sampler::Preferences, String>),
+    SamplerSaved(Result<Box<crate::sampler::Preferences>, String>),
     StartupAudioSaved(Result<crate::audio_devices::StartupSelection, String>),
     Loaded(Result<Box<LoadedLibrary>, String>),
     Saved(Result<(), String>),
     CheckpointFailed(String),
 }
 enum Command {
+    Pattern(Box<sampler_patterns::Write>),
+    Portable(portable::Request),
     PrepareGrid(Box<PrepareGridWrite>),
+    CueTrim(Box<cue_trim::CueTrimWrite>),
+    Order(crate_order::Request),
+    Hooks(hooks::Request),
     LocalKey(Box<local_keys::LocalKeyRequest>),
+    Chord(Box<chords::ChordRequest>),
     SaveSampler(
         crate::sampler::Preferences,
         Option<mpsc::Sender<Result<(), String>>>,
@@ -2018,6 +2058,7 @@ impl Worker {
                     };
                 let deck_session = store.read_deck_session(&library);
                 let loaded = LoadedLibrary {
+                    sampler_patterns: sampler_patterns::read(&store.connection),
                     table_columns: store.read_table_columns(),
                     startup_audio: startup_selection(&store.connection),
                     fx_preferences: store.read_fx_preferences(),
@@ -2057,10 +2098,11 @@ impl Worker {
                         }
                     };
                     match command {
+                        Command::Pattern(write)=>write.run(&mut store),
                         Command::SaveSampler(prefs,reply)=>{
                             let result=store.save_sampler(&prefs);
                             if let Some(reply)=reply{let _=reply.send(result.clone());}
-                            let _=events_tx.send(Event::SamplerSaved(result.map(|()|prefs)));
+                            let _=events_tx.send(Event::SamplerSaved(result.map(|()|Box::new(prefs))));
                         }
                         Command::SaveStartupAudio(selection)=>{
                             let result=(|| {
@@ -2083,6 +2125,14 @@ impl Worker {
                             let _ = request.reply.send(result);
                         }
                         Command::LocalKey(request) => request.run(&store),
+                        Command::CueTrim(request) => {
+                            let result = store.apply_cue_trim(&request);
+                            let _ = request.reply.send(result);
+                        }
+                        Command::Chord(request) => request.run(&mut store),
+                        Command::Hooks(request) => request.run(&mut store),
+                        Command::Portable(request) => request.run(&mut store),
+                        Command::Order(request) => request.run(&mut store),
                         Command::SaveDelta(delta, preferences, output, fx, deck_session, columns) => {
                             let result = store.save_session_state_with_columns(
                                 &delta,

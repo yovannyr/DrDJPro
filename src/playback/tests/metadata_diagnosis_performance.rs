@@ -20,6 +20,7 @@ fn r05_equal_duration_metadata_diagnosis_with_two_decks() {
             .track_by_id(library.track_id_for_path(&path).unwrap())
             .unwrap(),
     );
+    let mut phases = Vec::with_capacity(2);
     for active in [false, true] {
         let (stop, stopping) = mpsc::channel::<()>();
         let (ready, started) = mpsc::sync_channel(1);
@@ -56,7 +57,12 @@ fn r05_equal_duration_metadata_diagnosis_with_two_decks() {
             let reads = worker.join().unwrap();
             eprintln!("R05 completed diagnoses={reads}");
             assert!(if active { reads >= 200 } else { reads == 0 });
-            assert_eq!(result, (0, 0, 0, 0));
+            phases.push(result);
         });
     }
+    assert_eq!(
+        phases,
+        [(0, 0, 0, 0); 2],
+        "reference and load: render overruns, missed deadlines, signal errors and allocations"
+    );
 }

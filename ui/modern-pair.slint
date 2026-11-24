@@ -1,3 +1,4 @@
+import { SectionJumpView } from "section-jump.slint";
 import { ModernTheme } from "modern-theme.slint";
 import { BeatLine, HotCueRow } from "theme.slint";
 import { DeckAction, HoldAction, ControlKind, JogPhase } from "modern-state.slint";
@@ -7,6 +8,11 @@ import { ModernOverviewStrip, ModernDetailWaveform } from "modern-waveform.slint
 import { HoldButton, ValueRail } from "modern-controls.slint";
 
 export component ModernPair inherits Rectangle {
+    in property <SectionJumpView> left-section;
+    in property <SectionJumpView> right-section;
+    callback select-section-target(int,int);
+    callback arm-section-jump(int);
+    callback cancel-section-jump(int);
     // Left deck primitive properties (replaces ModernDeckData)
     in property <image> left-cover-image;
     in property <color> left-cover;
@@ -142,6 +148,10 @@ export component ModernPair inherits Rectangle {
         HorizontalLayout {
             spacing: 2px;
             left-header := ModernTrackHeader {
+                section-jump: root.left-section;
+                select-section(i) => { root.select-section-target(0, i); }
+                arm-section => { root.arm-section-jump(0); }
+                cancel-section => { root.cancel-section-jump(0); }
                 cover-image: root.left-cover-image; cover: root.left-cover; title: root.left-title; artist: root.left-artist;
                 musical-key: root.left-musical-key; time-text: root.left-time-text;
                 loaded: root.left-loaded; label: root.first-index == 0 ? "A" : "C";
@@ -151,6 +161,10 @@ export component ModernPair inherits Rectangle {
                 seek(position) => { root.seek-requested(root.first-index, position); }
             }
             right-header := ModernTrackHeader {
+                section-jump: root.right-section;
+                select-section(i) => { root.select-section-target(1, i); }
+                arm-section => { root.arm-section-jump(1); }
+                cancel-section => { root.cancel-section-jump(1); }
                 cover-image: root.right-cover-image; cover: root.right-cover; title: root.right-title; artist: root.right-artist;
                 musical-key: root.right-musical-key; time-text: root.right-time-text;
                 loaded: root.right-loaded; label: root.first-index == 0 ? "B" : "D";
@@ -257,6 +271,7 @@ export component ModernPair inherits Rectangle {
                         deck-label: root.first-index == 0 ? "A / DETAIL" : "C / DETAIL";
                         accessible-deck-label: root.first-index == 0 ? "Deck A" : "Deck C";
                         accent: root.left-accent;
+                        section-mark: root.left-section.supported ? root.left-section.mark : -1;
                         detail: root.left-detail; colors: root.left-detail-colors;
                         beats: root.left-beats; cues: root.left-cues;
                         playhead: root.left-detail-playhead;
@@ -271,6 +286,7 @@ export component ModernPair inherits Rectangle {
                         deck-label: root.first-index == 0 ? "B / DETAIL" : "D / DETAIL";
                         accessible-deck-label: root.first-index == 0 ? "Deck B" : "Deck D";
                         accent: root.right-accent;
+                        section-mark: root.right-section.supported ? root.right-section.mark : -1;
                         detail: root.right-detail; colors: root.right-detail-colors;
                         beats: root.right-beats; cues: root.right-cues;
                         playhead: root.right-detail-playhead;

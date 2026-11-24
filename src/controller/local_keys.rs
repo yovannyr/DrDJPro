@@ -10,13 +10,13 @@ use crate::{
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(PartialEq, Eq)]
-enum Version {
+pub(super) enum Version {
     Native(SampleVersion),
     Digest([u8; 32]),
 }
 
 impl Version {
-    fn read(path: &Path, cancel: &Cancellation) -> Result<Self, String> {
+    pub(super) fn read(path: &Path, cancel: &Cancellation) -> Result<Self, String> {
         cancel.check()?;
         match SampleVersion::read(path, Duration::ZERO)? {
             Some(stamp) => Ok(Self::Native(stamp)),

@@ -231,6 +231,7 @@ fn m01_equal_duration_twenty_sample_auditions_with_two_decks() {
         .map(|i| wav_file(1000 + 110 * i, RATE * 2))
         .collect();
     let paths: Vec<_> = files.iter().map(|file| file.path().to_owned()).collect();
+    let mut phases = Vec::with_capacity(2);
     for active in [false, true] {
         let paths = &paths;
         eprintln!("M01 two-deck sample browser active={active}");
@@ -293,10 +294,11 @@ fn m01_equal_duration_twenty_sample_auditions_with_two_decks() {
         } else {
             assert_eq!((switches, hits, peak), (0, 0, 0));
         }
-        assert_eq!(
-            audio,
-            (0, 0, 0, 0),
-            "render overruns, missed deadlines, bad signal blocks, allocations"
-        );
+        phases.push(audio);
     }
+    assert_eq!(
+        phases,
+        [(0, 0, 0, 0); 2],
+        "reference and load: render overruns, missed deadlines, bad signal blocks, allocations"
+    );
 }

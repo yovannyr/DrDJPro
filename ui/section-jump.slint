@@ -1,0 +1,86 @@
+import { ComboBox } from "std-widgets.slint";
+import { LibraryButton } from "controls.slint";
+import { DjTheme } from "theme.slint";
+
+export struct SectionJumpView {
+    supported: bool, targets: [string], target: int, mark: float, status: string, can-arm: bool,
+}
+
+export component SectionJumpControl inherits HorizontalLayout {
+    in property <SectionJumpView> jump;
+    in property <string> deck-label;
+    callback select-target(int);
+    callback arm();
+    callback cancel-jump();
+    spacing: 3px; horizontal-stretch: 0;
+    if root.jump.status != "" : Text {
+        width: 94px; text: root.jump.status; color: DjTheme.text-secondary;
+        font-size: 10px; overflow: elide; vertical-alignment: center;
+        accessible-role: text; accessible-label: root.deck-label + " bar jump status"; accessible-description: self.text;
+    }
+    LibraryButton {
+        height: 20px; text: "Bar jump"; active: root.jump.mark >= 0;
+        accessible-label: root.deck-label + " choose next-bar jump target";
+        clicked => { menu.show(); }
+    }
+    if root.jump.mark >= 0 : LibraryButton {
+        height: 20px; text: "Cancel"; accessible-label: root.deck-label + " cancel armed section jump";
+        clicked => { root.cancel-jump(); }
+    }
+    menu := PopupWindow {
+        x: root.width - self.width; y: root.height; width: 275px; height: 124px;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: DjTheme.panel-dark; border-color: DjTheme.text-secondary; border-width: 1px;
+            VerticalLayout {
+                padding: 7px; spacing: 3px;
+                Text { text: root.deck-label + " · Jump on next bar"; color: DjTheme.text-primary; }
+                ComboBox {
+                    model: root.jump.targets; current-index: root.jump.target;
+                    enabled: root.jump.targets.length > 0;
+                    accessible-label: root.deck-label + " cue or phrase target";
+                    selected => { root.select-target(self.current-index); }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    LibraryButton {
+                        text: "Arm jump"; enabled: root.jump.can-arm && root.jump.target >= 0 && root.jump.target < root.jump.targets.length;
+                        accessible-label: root.deck-label + " arm selected target for the next bar";
+                        clicked => { root.arm(); menu.close(); }
+                    }
+                    LibraryButton {
+                        text: "Cancel jump"; enabled: root.jump.mark >= 0;
+                        clicked => { root.cancel-jump(); menu.close(); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    LibraryButton { text: "Close"; clicked => { menu.close(); } }
+                }
+                Text {
+                    text: root.jump.status; color: DjTheme.text-secondary; wrap: word-wrap;
+                    font-size: 11px; accessible-role: text; accessible-label: root.deck-label + " jump details"; accessible-description: self.text;
+                }
+            }
+        }
+    }
+}
+
+export component SectionJumpMarker inherits Rectangle {
+    in property <float> target: -1;
+    in property <float> source-start: 0;
+    in property <float> source-end: 1;
+    in property <string> deck-label;
+    visible: root.target >= 0 && root.target <= 1 && root.source-end > root.source-start
+        && root.target >= root.source-start && root.target <= root.source-end;
+    accessible-role: image; accessible-label: root.deck-label + " armed section jump";
+    accessible-value: root.target;
+    line := Rectangle {
+        x: clamp((root.target - root.source-start) / max(0.000001, root.source-end - root.source-start), 0, 1) * max(0px, root.width - self.width);
+        width: 3px; height: root.height; background: #ffd34d;
+    }
+    Rectangle {
+        x: min(line.x, max(0px, root.width - self.width));
+        y: max(0px, root.height - self.height);
+        width: 29px; height: 11px; background: #ffd34d;
+        Text { text: "JUMP"; color: #18130a; font-size: 9px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+    }
+}

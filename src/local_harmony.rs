@@ -1,6 +1,7 @@
 //! Worker-only local key estimation. Source-time sections have no dependency on beatgrid or tags.
 mod sections;
 mod spectrum;
+pub(crate) use spectrum::peak_chroma;
 #[cfg(test)]
 mod tests;
 

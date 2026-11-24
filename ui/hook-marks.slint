@@ -1,0 +1,53 @@
+import { Button,LineEdit,ListView,ComboBox } from "std-widgets.slint";
+import { DjTheme } from "theme.slint";
+export component HookWindow inherits Window {
+    title: "Wordplay marks"; preferred-width:730px; preferred-height:530px; min-width:585px; min-height:425px; background:DjTheme.app-bg;
+    in property<string> title-label; in property<[string]> cues;
+    in-out property<string> position:"0"; in-out property<string> term;
+    in property<[string]> rows; in property<int> selection:-1;
+    in property<bool> more; in property<bool> busy; in property<bool> route; in property<string> status;
+    callback use-library(); callback use-cue(int); callback search(string);callback next-page();
+    callback choose(int); callback save(); callback remove(); callback listen(); callback stop(); callback dismiss();
+    callback open-practice();
+    VerticalLayout {
+        padding:12px; spacing:7px;
+        HorizontalLayout {
+            spacing:5px;
+            Text { text:root.title-label; color:DjTheme.text-primary; vertical-alignment:center; horizontal-stretch:1; overflow:elide; }
+            Button { text:"New mark on selected track"; enabled:!root.busy; clicked => {root.use-library();} }
+            Button {text:"Cue practice";clicked=>{root.open-practice();}}
+        }
+        HorizontalLayout {
+            spacing:5px;
+            Text { text:"Saved cue"; color:DjTheme.text-secondary; vertical-alignment:center; }
+            ComboBox { model:root.cues; enabled:root.cues.length>0 && !root.busy; selected(item)=>{root.use-cue(self.current-index);} }
+            Text { text:"Position (s)"; color:DjTheme.text-secondary; vertical-alignment:center; }
+            LineEdit {text<=>root.position; horizontal-stretch:1;accessible-label:"Source position in seconds";}
+        }
+        HorizontalLayout {
+            spacing:5px;
+            Text {text:"Word or phrase";color:DjTheme.text-secondary;vertical-alignment:center;}
+            LineEdit {text<=>root.term;horizontal-stretch:1;accessible-label:"Word or phrase at this position";}
+            Button {text:"Save";enabled:!root.busy && root.term!="";clicked=>{root.save();}}
+            Button {text:"Remove";enabled:root.selection>=0 && !root.busy;clicked=>{root.remove();}}
+        }
+        HorizontalLayout {
+            spacing:5px;
+            query:=LineEdit {horizontal-stretch:1;placeholder-text:"Exact word or phrase, or leave blank for all"; accessible-label:"Search saved words or phrases";accepted=>{root.search(self.text);}}
+            Button {text:"Search";enabled:!root.busy;clicked=>{root.search(query.text);}}
+            Button {text:"Next page";enabled:root.more && !root.busy;clicked=>{root.next-page();}}
+        }
+        ListView {
+            vertical-stretch:1;
+            for row[i] in root.rows : Button {text:row;checkable:true;checked:i==root.selection;enabled:!root.busy;clicked=>{root.choose(i);}}
+        }
+        HorizontalLayout {
+            spacing:5px;
+            Button {text:"Headphone preview";enabled:root.route && root.selection>=0 && !root.busy;clicked=>{root.listen();}}
+            Button {text:"Stop";clicked=>{root.stop();}}
+            if !root.route:Text {text:"Separate headphone output required";color:DjTheme.text-secondary;vertical-alignment:center; }
+            Rectangle {horizontal-stretch:1;} Button {text:"Close";clicked=>{root.dismiss();}}
+        }
+        Text {text:root.status;color:DjTheme.text-secondary;wrap:word-wrap;}
+    }
+}

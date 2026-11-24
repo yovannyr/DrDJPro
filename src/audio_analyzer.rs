@@ -277,7 +277,7 @@ fn camelot(tonic: usize, minor: bool) -> String {
 }
 
 /// Schätzt die Tonart durch Abgleich mit den 24 rotierten Krumhansl-Kessler-Profilen.
-fn estimate_key(chroma: &[f64; 12]) -> Option<String> {
+pub(crate) fn estimate_key(chroma: &[f64; 12]) -> Option<String> {
     let mut best: Option<(f64, usize, bool)> = None;
 
     for tonic in 0..12 {
@@ -362,7 +362,7 @@ fn estimate_bpm(envelope: &[f32], env_rate: f64) -> Option<f32> {
     )
     .expect("uncancelled BPM estimate")
 }
-fn estimate_bpm_cancellable(
+pub(crate) fn estimate_bpm_cancellable(
     envelope: &[f32],
     env_rate: f64,
     cancel: &crate::cancellation::Cancellation,

@@ -92,7 +92,7 @@ impl Spectrum {
         for (i, energy) in self.power.iter_mut().enumerate().skip(1) {
             *energy = self.data[i].norm_sqr() + self.data[n - i].norm_sqr();
         }
-        if let Some(chroma) = spectrum_chroma(&self.power, self.rate as f32 / n as f32) {
+        if let Some(chroma) = peak_chroma(&self.power, self.rate as f32 / n as f32, 0.27) {
             for (sum, pitch) in self.chroma.iter_mut().zip(chroma) {
                 *sum += pitch * count as f32;
             }
@@ -125,7 +125,11 @@ impl Spectrum {
 }
 
 /// A concentrated group of pitched peaks survives this gate; broadband percussion generally does not.
-fn spectrum_chroma(power: &[f32], hz_per_bin: f32) -> Option<Chroma> {
+pub(crate) fn peak_chroma(
+    power: &[f32],
+    hz_per_bin: f32,
+    minimum_concentration: f32,
+) -> Option<[f32; 12]> {
     let first = (65. / hz_per_bin).ceil() as usize;
     let last = (2500. / hz_per_bin).floor() as usize;
     let total = power[first..=last].iter().sum::<f32>();
@@ -142,7 +146,7 @@ fn spectrum_chroma(power: &[f32], hz_per_bin: f32) -> Option<Chroma> {
         }
         peaks[j] = (p, i);
     }
-    if total <= 0. || peaks.iter().map(|p| p.0).sum::<f32>() < 0.27 * total {
+    if total <= 0. || peaks.iter().map(|p| p.0).sum::<f32>() < minimum_concentration * total {
         return None;
     }
     let mut chroma = [0.; 12];

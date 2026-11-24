@@ -9,6 +9,7 @@ fn r04_equal_duration_import_checks_with_two_playing_decks() {
     let copy = wav_file(4096, 48_000 * 4);
     let other = wav_file(-4096, 48_000 * 4);
     let files = [original.path(), copy.path(), other.path()].map(|p| p.canonicalize().unwrap());
+    let mut phases = Vec::with_capacity(2);
     for active in [false, true] {
         eprintln!("R04 import comparison active={active}");
         let files = &files;
@@ -44,11 +45,12 @@ fn r04_equal_duration_import_checks_with_two_playing_decks() {
             let scans = worker.join().unwrap();
             assert!(if active { scans >= 2 } else { scans == 0 });
             eprintln!("R04 complete file comparisons={scans}");
-            assert_eq!(
-                result,
-                (0, 0, 0, 0),
-                "render overruns, late blocks, signal gaps, allocations"
-            );
+            phases.push(result);
         });
     }
+    assert_eq!(
+        phases,
+        [(0, 0, 0, 0); 2],
+        "reference and load: render overruns, late blocks, signal gaps, allocations"
+    );
 }

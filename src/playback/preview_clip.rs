@@ -147,7 +147,7 @@ fn opus_clip(
     finish(pcm, channels, RATE, frame_time(first, RATE), cancel)
 }
 
-pub(super) fn finish(
+pub(crate) fn finish(
     pcm: Vec<f32>,
     channels: u16,
     rate: u32,
@@ -168,6 +168,33 @@ pub(super) fn finish(
 }
 
 impl PreviewClip {
+    #[cfg(test)]
+    pub(crate) fn test_pcm(&self) -> &[f32] {
+        &self.pcm
+    }
+    pub(crate) fn pad_sequence(
+        pcm: Vec<f32>,
+        rate: u32,
+        cancel: &Cancellation,
+    ) -> Result<Self, String> {
+        finish(pcm, 2, rate, Duration::ZERO, cancel)
+    }
+    /// One second of concert-pitch reference audio, with a quiet level and five-ms end ramps.
+    pub(crate) fn pad_reference(note: i32) -> Result<Self, String> {
+        if !(0..=127).contains(&note) {
+            return Err("Choose a MIDI note from 0 to 127".into());
+        }
+        let rate = 32_000u32;
+        let hz = 440. * 2_f64.powf(f64::from(note - 69) / 12.);
+        let pcm = (0..rate)
+            .map(|i| {
+                let gain = f64::from(i.min(rate - 1 - i).min(160)) / 160.;
+                (0.16 * gain * (std::f64::consts::TAU * hz * f64::from(i) / f64::from(rate)).sin())
+                    as f32
+            })
+            .collect();
+        finish(pcm, 1, rate, Duration::ZERO, &Cancellation::default())
+    }
     /// Allocated PCM bytes. Renderer and cache handles share the same backing allocation.
     pub(super) fn pcm_bytes(&self) -> usize {
         self.pcm.capacity() * size_of::<f32>()

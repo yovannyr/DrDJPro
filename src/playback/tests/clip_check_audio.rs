@@ -297,6 +297,7 @@ fn a01_equal_duration_clip_check_with_two_decks() {
     use std::sync::mpsc;
     let file = fixture();
     let path = file.path();
+    let mut phases = Vec::with_capacity(2);
     for active in [false, true] {
         eprintln!("A01 clip scan and loudness-matched PFL active={active}");
         let (audio, switches) = std::thread::scope(|scope| {
@@ -346,10 +347,11 @@ fn a01_equal_duration_clip_check_with_two_decks() {
         } else {
             switches == 0
         });
-        assert_eq!(
-            audio,
-            (0, 0, 0, 0),
-            "overruns, deadline misses, signal errors, render allocations"
-        );
+        phases.push(audio);
     }
+    assert_eq!(
+        phases,
+        [(0, 0, 0, 0); 2],
+        "reference and load: overruns, deadline misses, signal errors, render allocations"
+    );
 }

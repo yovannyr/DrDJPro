@@ -1,6 +1,8 @@
 //! Session library state. File inspection runs on the control worker, not the UI/audio thread.
 pub(crate) mod gigs;
 pub(crate) mod import_review;
+mod planning;
+pub(crate) use planning::PlanningCatalog;
 pub mod protobuf;
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -344,6 +346,8 @@ struct TrackSearch {
     path: String,
     // Lower-case search text cannot reopen a case-sensitive or non-Unicode native path.
     native_path: Option<PathBuf>,
+    /// Preserve display spelling when it differs from the normalized searchable text.
+    planning_title: Option<Box<str>>,
 }
 
 // A bounded, lossy trigram index. Collisions and obsolete metadata bits can
@@ -440,11 +444,17 @@ impl SearchIndex {
 impl Track {
     fn refresh_search(&mut self) {
         let path = self.path.to_string_lossy().to_lowercase();
+        let title = self.metadata.title.to_lowercase();
+        let name = self.name.to_lowercase();
+        let normalized = if title.is_empty() { &name } else { &title };
+        let planning_title =
+            (normalized != self.display_title()).then(|| self.display_title().into());
         self.search = Arc::new(TrackSearch {
-            title: self.metadata.title.to_lowercase(),
+            title,
             artist: self.metadata.artist.to_lowercase(),
             album: self.metadata.album.to_lowercase(),
-            name: self.name.to_lowercase(),
+            name,
+            planning_title,
             native_path: (self.path.as_os_str() != std::ffi::OsStr::new(&path))
                 .then(|| self.path.clone()),
             path,
@@ -473,6 +483,7 @@ struct SearchRecord {
     key: Option<(u8, bool)>,
     gain: Option<f32>,
     analysis_status: u8,
+    planning: planning::PlanningData,
 }
 
 const SEARCH_RECORD_CHUNK: usize = 256;
@@ -584,7 +595,12 @@ impl SearchProjection {
                 .collect(),
         };
         if let Some(history_order) = self.history_order.as_ref().filter(|_| spec.field == -1) {
-            matches.sort_by_key(|track| history_order[&track.id]);
+            matches.sort_by_key(|track| {
+                (
+                    history_order.get(&track.id).copied().unwrap_or(usize::MAX),
+                    track.id,
+                )
+            });
         } else {
             matches.sort_by(|a, b| a.compare(b, spec.field, spec.descending));
         }
@@ -758,6 +774,8 @@ pub struct Library {
     selected: Option<i32>,
     sort_field: i32,
     sort_requested: bool,
+    crate_column_sort: bool,
+    saved_order: Option<Arc<HashMap<i32, usize>>>,
     analysis_revision: u64,
     descending: bool,
     crates: crate::crates::CrateCatalog,
@@ -779,6 +797,7 @@ impl Library {
         let track = &self.tracks[index];
         let record = SearchRecord {
             id: track.id,
+            planning: planning::PlanningData::from_track(track),
             search: Arc::clone(&track.search),
             has_title: !track.metadata.title.is_empty(),
             format: track.format.clone(),
@@ -1120,6 +1139,56 @@ impl Library {
             .map(|i| self.tracks[*i].hot_cues.clone())
             .unwrap_or_default()
     }
+    fn cue_trim_index(
+        &self,
+        id: i32,
+        path: &Path,
+        change: &crate::hot_cues::CueTrimChange,
+    ) -> Result<usize, String> {
+        let index = *self
+            .keys
+            .get(&identity(path))
+            .ok_or("Cue source is no longer in the library")?;
+        let track = &self.tracks[index];
+        if track.id != id {
+            return Err("Cue source changed. Reopen the cue editor.".into());
+        }
+        change.check(&track.hot_cues, track.grid)?;
+        Ok(index)
+    }
+
+    /// Check the draft against the in-memory track before submitting its guarded SQL update.
+    pub(crate) fn validate_cue_trim(
+        &self,
+        id: i32,
+        path: &Path,
+        change: &crate::hot_cues::CueTrimChange,
+    ) -> Result<(), String> {
+        self.cue_trim_index(id, path, change).map(|_| ())
+    }
+
+    /// Reflect the committed position, retaining unrelated pending changes on this track.
+    pub(crate) fn apply_committed_cue_trim(
+        &mut self,
+        id: i32,
+        path: &Path,
+        change: &crate::hot_cues::CueTrimChange,
+    ) -> Result<(), String> {
+        let index = self.cue_trim_index(id, path, change)?;
+        if change.original.position() != change.position {
+            self.tracks[index]
+                .hot_cues
+                .set(change.slot, Some(change.replacement()))?;
+            *self.view_cache.get_mut() = None;
+            self.update_planning_record(index);
+            self.revision = self
+                .revision
+                .checked_add(1)
+                .expect("Library revision overflow");
+        }
+        Ok(())
+    }
+
     pub fn set_hot_cue(
         &mut self,
         path: &Path,
@@ -1132,6 +1201,7 @@ impl Library {
             .ok_or("Track is not in the library")?;
         let index = *index;
         self.tracks[index].hot_cues.set(slot, cue)?;
+        self.update_planning_record(index);
         self.mark_track(index);
         Ok(())
     }
@@ -1159,6 +1229,7 @@ impl Library {
             return Err("Beatgrid is locked; unlock it in Prepare".into());
         }
         self.tracks[index].grid = grid;
+        self.update_planning_record(index);
         self.mark_track(index);
         Ok(())
     }
@@ -1182,6 +1253,29 @@ impl Library {
     }
     pub fn active_crate(&self) -> i32 {
         self.active_crate
+    }
+    /// A saved setlist orders the normal search projection, including filtered pages.
+    pub(crate) fn set_saved_order(&mut self, id: i32, order: Option<&[i32]>) -> bool {
+        if id <= 0 || self.active_crate != id {
+            return false;
+        }
+        let ranks = order.map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (*id, i))
+                .collect::<HashMap<_, _>>()
+        });
+        if self.saved_order.as_deref() == ranks.as_ref() {
+            return false;
+        }
+        self.saved_order = ranks.map(Arc::new);
+        self.search_revision = self
+            .search_revision
+            .checked_add(1)
+            .expect("Search revision overflow");
+        *self.view_cache.get_mut() = None;
+        true
     }
     pub fn prep_queue(&self) -> &[i32] {
         &self.prep_queue
@@ -1251,6 +1345,8 @@ impl Library {
         }
         if self.active_crate != id {
             self.active_crate = id;
+            self.saved_order = None;
+            self.crate_column_sort = false;
             self.missing_cache.set(None);
             *self.view_cache.get_mut() = None;
         }
@@ -1371,6 +1467,7 @@ impl Library {
             return Ok(false);
         }
         self.tracks[index].metadata.music_labels = labels;
+        self.update_planning_record(index);
         self.mark_track_dirty(index);
         Ok(true)
     }
@@ -1734,6 +1831,7 @@ impl Library {
     }
     pub fn sort(&mut self, field: i32) {
         self.sort_requested = true;
+        self.crate_column_sort = self.active_crate > 0;
         *self.view_cache.get_mut() = None;
         let field = field.clamp(0, 10);
         if field == self.sort_field {
@@ -1759,6 +1857,7 @@ impl Library {
             query: self.query.clone(),
             smart_query,
             field: if self.active_crate == PREP_SCOPE
+                || (self.saved_order.is_some() && !self.crate_column_sort)
                 || (self.active_crate == HISTORY_SCOPE && !self.sort_requested)
             {
                 -1
@@ -1814,7 +1913,7 @@ impl Library {
                         .cloned()
                         .unwrap_or_default()
                 }),
-                None,
+                self.saved_order.clone(),
             )
         };
         SearchProjection {

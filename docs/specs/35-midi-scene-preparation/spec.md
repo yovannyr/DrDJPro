@@ -1,6 +1,8 @@
 # Spec 35 · MIDI-Szenen für die Trackvorbereitung
 
-**Status:** geplant. Anforderungen und Abnahmekriterien für eine spätere Umsetzung.
+**Stand 24. November 2026.** Der MIDI-Szeneneditor ist im Feature-Branch über **Prepare → Set planning → MIDI scene editor** erreichbar. Testergebnisse, Messbedingungen und offene Gegenproben stehen im [Prüfbericht zu den 35 Funktionen](../MUSIKVORBEREITUNG_ABSCHLUSSPRUEFUNG.md).
+
+Der Editor speichert das musikalische Raster, die Noten und die Spurenrollen. Unter **Sampler groove** wirkt die Zeitverschiebung gemeinsam auf die gewählten Pads. Unter **Audio phrase** kann der DJ eine isolierte Melodie verknüpfen, die erkannten Noten bearbeiten und die freigegebenen Ereignisse als MIDI exportieren. **Accompaniment** bietet für vier Takte zwei Vorschauen an. Die Kopfhörerwiedergabe verwendet eine gemeinsame Abspielposition für Original, Bass und Akkorde. Unter **Scale** lassen sich beide Tonleitern vergleichen und einzelne chromatische Töne ausdrücklich zuordnen. Die Drumspur behält ihre Tonhöhen.
 
 ## Ziel und Arbeitsablauf
 

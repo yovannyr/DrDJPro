@@ -1,6 +1,6 @@
 use super::{read_grid_row, Command, Store, Worker};
 use crate::beatgrid::{BeatGrid, TempoComparison};
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -90,16 +90,7 @@ impl Store {
                 "Track changed or has not finished saving; reopen the tempo comparison".into(),
             );
         }
-        let current = {
-            let mut statement = tx.prepare("SELECT track_id,bpm,anchor_ns,beats_per_bar,base_meter_denominator,meter_changes,tempo_changes,warp_markers,locked FROM track_grids WHERE track_id=?1")
-                .map_err(|e| e.to_string())?;
-            let mut rows = statement.query([request.id]).map_err(|e| e.to_string())?;
-            rows.next()
-                .map_err(|e| e.to_string())?
-                .map(read_grid_row)
-                .transpose()
-                .map_err(|e| format!("Cannot read saved grid: {e:?}"))?
-        };
+        let current = saved_prepare_grid(&tx, request.id)?;
         if current != request.expected {
             return Err("Saved grid changed; reopen the tempo comparison".into());
         }
@@ -135,4 +126,18 @@ impl Store {
         self.backup_pending = true;
         Ok(())
     }
+}
+
+pub(super) fn saved_prepare_grid(
+    connection: &Connection,
+    id: i32,
+) -> Result<Option<BeatGrid>, String> {
+    let mut statement = connection.prepare("SELECT track_id,bpm,anchor_ns,beats_per_bar,base_meter_denominator,meter_changes,tempo_changes,warp_markers,locked FROM track_grids WHERE track_id=?1")
+        .map_err(|e| e.to_string())?;
+    let mut rows = statement.query([id]).map_err(|e| e.to_string())?;
+    rows.next()
+        .map_err(|e| e.to_string())?
+        .map(read_grid_row)
+        .transpose()
+        .map_err(|e| format!("Cannot read saved grid: {e:?}"))
 }

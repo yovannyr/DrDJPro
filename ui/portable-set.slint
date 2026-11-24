@@ -1,0 +1,65 @@
+import { Button,CheckBox,ComboBox,LineEdit,ListView } from "std-widgets.slint";
+import { DjTheme } from "theme.slint";
+export component PackageWindow inherits Window {
+    title:"Portable sets"; preferred-width:740px; preferred-height:520px; min-width:550px; min-height:390px;
+    background:DjTheme.app-bg;
+    in-out property <string> set-name:"My set"; in-out property <int> selected:-1;
+    in property <[string]> rows; in property <[string]> saved; in property <string> status;
+    in property <bool> imported; in property <bool> busy; in-out property <bool> playable:true;
+    in-out property <string> entry-start:"0"; in-out property <string> entry-end:"";
+    callback action(int); callback recalled(string); callback select-entry(int);
+    VerticalLayout { padding:12px; spacing:6px;
+        HorizontalLayout {
+            spacing:6px; Text {text:"Set name"; color:DjTheme.text-primary;vertical-alignment:center;}
+            LineEdit { text <=> root.set-name; horizontal-stretch:1; accessible-label:"Set name in catalog"; }
+            Button {text:"New";enabled:!root.busy;clicked=>{root.action(0);}}
+            Button {text:"Open package…";enabled:!root.busy;clicked=>{root.action(8);}}
+        }
+        HorizontalLayout {
+            spacing:6px; stored := ComboBox {model:root.saved; horizontal-stretch:1; accessible-label:"Catalog sets";}
+            Button {text:"Open saved set";enabled:root.saved.length>0 && !root.busy;clicked=>{root.recalled(stored.current-value);}}
+            Button {text:"Refresh saved sets";enabled:!root.busy;clicked=>{root.action(15);}}
+        }
+        if !root.imported : HorizontalLayout {
+            spacing:5px; Button {text:"Add selected track";enabled:!root.busy;clicked=>{root.action(1);}}
+            Button {text:"Add prep queue";enabled:!root.busy;clicked=>{root.action(2);}}
+            Button {text:"Add crate";enabled:!root.busy;clicked=>{root.action(17);}}
+            Button {text:"Remove";enabled:root.selected>=0 && !root.busy;clicked=>{root.action(3);}}
+            CheckBox {text:"Playable set (all media)";checked <=> root.playable;}
+        }
+        ListView {vertical-stretch:1;
+            for r[i] in root.rows: Rectangle {
+                height:33px; background:i==root.selected ? DjTheme.selection-bg : DjTheme.panel-bg;
+                Text {text:r;color:DjTheme.text-primary;vertical-alignment:center;overflow:elide;}
+                FocusScope {
+                    enabled:!root.busy; accessible-role:button; accessible-label:r;
+                    accessible-action-default => {root.selected=i;root.select-entry(i);}
+                    key-pressed(event) => {
+                        if event.text==Key.Return || event.text==Key.Space {root.selected=i;root.select-entry(i);return accept;}
+                        return reject;
+                    }
+                    TouchArea {clicked=>{parent.focus();root.selected=i;root.select-entry(i);}}
+                }
+            }
+        }
+        if !root.imported : HorizontalLayout {
+            spacing:4px; Button {text:"Include / exclude clip";enabled:!root.playable && root.selected>=0 && !root.busy;clicked=>{root.action(4);}}
+            Text { text:"In (s)";color:DjTheme.text-secondary;vertical-alignment:center;}
+            LineEdit {text <=> root.entry-start; width:64px;accessible-label:"Transition start seconds";}
+            Text { text:"Out (s)";color:DjTheme.text-secondary;vertical-alignment:center;}
+            LineEdit {text <=> root.entry-end; width:64px;accessible-label:"Transition end seconds";}
+            Button {text:"Set marks";enabled:root.selected>=0 && !root.busy;clicked=>{root.action(5);}}
+        }
+        HorizontalLayout {spacing:5px;
+            if !root.imported : Button {text:"Measure size";enabled:!root.busy;clicked=>{root.action(6);}}
+            if !root.imported : Button {text:"Export package…";enabled:!root.busy;clicked=>{root.action(7);}}
+            if root.imported : Button {text:"Match file…";enabled:root.selected>=0 && !root.busy;clicked=>{root.action(9);}}
+            if root.imported : Button {text:"Save to catalog";enabled:!root.busy;clicked=>{root.action(10);}}
+            if root.imported : Button {text:"Load A";enabled:root.selected>=0 && !root.busy;clicked=>{root.action(11);}}
+            if root.imported : Button {text:"Load B";enabled:root.selected>=0 && !root.busy;clicked=>{root.action(12);}}
+            Button {text:"Cancel operation";enabled:root.busy;clicked=>{root.action(13);}}
+        }
+        if root.imported:Button {text:"Apply this entry’s cue slots to the library track";enabled:root.selected>=0 && !root.busy;clicked=>{root.action(14);}}
+        Text {text:root.status; color:DjTheme.text-primary; wrap:word-wrap;min-height:34px;}
+    }
+}

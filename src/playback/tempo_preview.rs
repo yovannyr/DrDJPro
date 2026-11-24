@@ -118,6 +118,8 @@ impl Voice {
 }
 
 enum PreviewVoice {
+    Scene(super::scene_loop::Voice),
+    Phrase(Box<crate::sampler::phrase::Audition>),
     Tempo(Voice),
     Key(super::key_reference::ReferenceVoice),
     Sample(Excerpt),
@@ -130,6 +132,9 @@ pub(crate) struct PreviewControl {
 }
 
 impl PreviewControl {
+    pub(super) fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
+    }
     // One control-plane writer. Odd epochs request playback, even epochs silence.
     pub(super) fn start(&self, voice: Voice) {
         self.publish(PreviewVoice::Tempo(voice));
@@ -141,6 +146,12 @@ impl PreviewControl {
 
     pub(super) fn start_sample(&self, excerpt: Excerpt) {
         self.publish(PreviewVoice::Sample(excerpt));
+    }
+    pub(super) fn start_scene(&self, voice: super::scene_loop::Voice) {
+        self.publish(PreviewVoice::Scene(voice));
+    }
+    pub(super) fn start_phrase(&self, phrase: crate::sampler::phrase::Audition) {
+        self.publish(PreviewVoice::Phrase(Box::new(phrase)));
     }
 
     fn publish(&self, voice: PreviewVoice) {
@@ -208,6 +219,8 @@ impl PreviewRenderer {
         }
         if let Some(voice) = &mut self.active {
             let frame = match voice {
+                PreviewVoice::Scene(voice) => Some(voice.frame()),
+                PreviewVoice::Phrase(phrase) => phrase.frame(),
                 PreviewVoice::Tempo(voice) => voice.frame(),
                 PreviewVoice::Key(voice) => Some(voice.frame()),
                 PreviewVoice::Sample(excerpt) => excerpt.frame(),

@@ -1,7 +1,9 @@
+import { SectionJumpMarker } from "section-jump.slint";
 import { ModernTheme } from "modern-theme.slint";
 import { BeatLine, HotCueRow } from "theme.slint";
 
 export component ModernOverviewStrip inherits Rectangle {
+    in property <float> section-mark: -1;
     in property <string> deck-label;
     in property <bool> enabled: false;
     in property <brush> accent;
@@ -57,6 +59,7 @@ export component ModernOverviewStrip inherits Rectangle {
         color: ModernTheme.muted; font-size: 9px;
     }
 
+    SectionJumpMarker { width: parent.width; height: parent.height; target: root.section-mark; deck-label: root.deck-label; }
     TouchArea {
         enabled: root.enabled;
         accessible-role: slider;
@@ -66,6 +69,7 @@ export component ModernOverviewStrip inherits Rectangle {
 }
 
 export component ModernDetailWaveform inherits Rectangle {
+    in property <float> section-mark: -1;
     in property <string> deck-label;
     in property <string> accessible-deck-label: root.deck-label;
     in property <brush> accent;
@@ -146,6 +150,7 @@ export component ModernDetailWaveform inherits Rectangle {
         background: #ffffff;
     }
 
+    SectionJumpMarker { width: parent.width; height: parent.height; target: root.section-mark; source-start: root.detail-start / 100; source-end: root.detail-end / 100; deck-label: root.accessible-deck-label; }
     zoom-keys := FocusScope {
         width: 0;
         enabled: root.enabled && root.keyboard-zoom;

@@ -136,6 +136,7 @@ fn a07_equal_duration_reference_piano_with_two_decks() {
     let file = wav_file(4096, RATE / 3);
     let clip = PreviewClip::open(file.path(), Duration::ZERO, &Cancellation::default()).unwrap();
     let key = CamelotKey::parse("8A").unwrap();
+    let mut phases = Vec::with_capacity(2);
     for active in [false, true] {
         eprintln!("A07 looping passage and A minor reference triad active={active}");
         let result = super::render_bench::measure_routed(
@@ -149,10 +150,11 @@ fn a07_equal_duration_reference_piano_with_two_decks() {
             || {},
             Some(active),
         );
-        assert_eq!(
-            result,
-            (0, 0, 0, 0),
-            "render overruns, missed deadlines, bad signal blocks, allocations"
-        );
+        phases.push(result);
     }
+    assert_eq!(
+        phases,
+        [(0, 0, 0, 0); 2],
+        "reference and load: render overruns, missed deadlines, bad signal blocks, allocations"
+    );
 }

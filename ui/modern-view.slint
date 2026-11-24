@@ -1,3 +1,4 @@
+import { SectionJumpView } from "section-jump.slint";
 import { ModernTheme } from "modern-theme.slint";
 import { DeckAction, HoldAction, ControlKind, JogPhase } from "modern-state.slint";
 import { BeatLine } from "theme.slint";
@@ -9,6 +10,11 @@ import { Button } from "std-widgets.slint";
 // Nimmt deck-spezifische primitive Properties — die Mapping-Logik
 // erfolgt in app.slint, nicht in Slint-Funktionen (Slint 1.18 Limit).
 export component ModernView inherits Rectangle {
+    in property <SectionJumpView> left-section;
+    in property <SectionJumpView> right-section;
+    callback select-section-target(int,int);
+    callback arm-section-jump(int);
+    callback cancel-section-jump(int);
     in property <bool> four-slots: false;
     in property <bool> library-open: true;
     in property <bool> active-view: true;
@@ -200,6 +206,10 @@ export component ModernView inherits Rectangle {
 
         // Primary pair (A/B or C/D)
         primary-pair := ModernPair {
+            left-section: root.left-section; right-section: root.right-section;
+            select-section-target(deck, i) => { root.select-section-target(deck, i); }
+            arm-section-jump(deck) => { root.arm-section-jump(deck); }
+            cancel-section-jump(deck) => { root.cancel-section-jump(deck); }
             first-index: 0; compact: root.four-slots;
             active-view: root.active-view;
             show-crossfader: true;

@@ -1,3 +1,4 @@
+import { SectionJumpView } from "section-jump.slint";
 // DRDJPRO CONNECTED LAYOUT — generated from local source
 import "layout-fonts/LiberationSans-Regular.ttf";
 import "layout-fonts/LiberationSans-Bold.ttf";
@@ -7,6 +8,17 @@ export { LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, TempoComparison
 export { RemoteDisplayWindow } from "remote-display.slint";
 export { WebBrowserWindow } from "web_view.slint";
 export { ItunesWindow,ItunesRow } from "itunes.slint";
+export { SetPlanningWindow } from "set-planning.slint";
+export { TimelineWindow, TimelineRow, TimelineRange } from "set-timeline.slint";
+export { PadPatternWindow } from "pad-patterns.slint";
+export { SourceMonitorWindow } from "source-monitor.slint";
+export { SamplerToolsWindow } from "sampler-tools.slint";
+export { PackageWindow } from "portable-set.slint";
+export { HookWindow } from "hook-marks.slint";
+export { HookPracticeWindow } from "hook-practice.slint";
+export { PassageWindow } from "passage-analysis.slint";
+export { SceneWindow } from "midi-scene.slint";
+export { CrateOrderWindow, OrderAnchorRow } from "crate-order.slint";
 export { CrashReportsWindow,CrashReportRow } from "crash-reports.slint";
 import { SettingsFrame, SettingsTab, QuantizeGridRow } from "settings.slint";
 import { AiSettings, AiPage, AiOperation } from "ai-settings.slint";
@@ -22,6 +34,8 @@ import { ImportReviewRow } from "import-review.slint";
 export { ImportReviewRow } from "import-review.slint";
 import { MetadataDiagnosisView } from "metadata-diagnosis.slint";
 export { MetadataDiagnosisView } from "metadata-diagnosis.slint";
+import { ChordPairRow, ChordPairSettings } from "chord-pair.slint";
+export { ChordPairRow, ChordPairSettings } from "chord-pair.slint";
 import { GigRuleView } from "gig-planning.slint";
 import { SampleBrowserPanel } from "sample-browser.slint";
 export { GigRuleView } from "gig-planning.slint";
@@ -298,7 +312,7 @@ export component AppWindow inherits Window {
     callback controller-cancel-load-gesture();
     in-out property <bool> controller-browser-crates;
     out property <bool> controller-editor-open: root.crate-editor-open || root.cover-label-editor.open || root.left-grid-editing || root.right-grid-editing || root.left-cue-editing || root.right-cue-editing || left-deck.loop-name-focused || right-deck.loop-name-focused;
-    out property <bool> controller-search-focused: track-library.search-focused || track-library.import-text-focused || track-library.diagnosis-text-focused || track-library.gig-text-focused || track-library.local-key-text-focused;
+    out property <bool> controller-search-focused: track-library.search-focused || track-library.import-text-focused || track-library.diagnosis-text-focused || track-library.gig-text-focused || track-library.local-key-text-focused || track-library.chord-pair-text-focused || root.cue-trim-visible;
     callback focus-library-tracks();
     focus-library-tracks => { track-library.focus-tracks(); }
     callback reveal-library-row(int);
@@ -564,6 +578,7 @@ export component AppWindow inherits Window {
     in property <string> sampler-status:"Sampler ready (session only)";
     callback sampler-action(int,int,bool);
     callback sampler-level();
+    callback open-pad-patterns();
     in property <string> fx-summary-a;
     in property <string> fx-summary-b;
     in-out property <int> fx-selected-a;
@@ -760,11 +775,72 @@ export component AppWindow inherits Window {
     callback clear-grid-left();
     callback clear-grid-right();
 
+    in property <[string]> section-targets-left;
+    in property <int> section-target-left: -1;
+    in property <float> section-mark-left: -1;
+    in property <string> section-status-left;
+    in property <bool> section-can-arm-left;
+    private property <SectionJumpView> left-section: {
+        supported: true, targets: root.section-targets-left, target: root.section-target-left,
+        mark: root.section-mark-left, status: root.section-status-left, can-arm: root.section-can-arm-left,
+    };
+    in property <[string]> section-targets-right;
+    in property <int> section-target-right: -1;
+    in property <float> section-mark-right: -1;
+    in property <string> section-status-right;
+    in property <bool> section-can-arm-right;
+    private property <SectionJumpView> right-section: {
+        supported: true, targets: root.section-targets-right, target: root.section-target-right,
+        mark: root.section-mark-right, status: root.section-status-right, can-arm: root.section-can-arm-right,
+    };
+    callback select-section-target(int,int);
+    callback arm-section-jump(int);
+    callback cancel-section-jump(int);
     in property <[LibraryRow]> library-rows;
     in-out property <int> library-tab;
     in property <TempoComparisonView> tempo-comparison;
     callback open-tempo-comparison();
     in property <MetadataDiagnosisView> metadata-diagnosis;
+    in property <bool> cue-trim-open;
+    in property <bool> cue-trim-busy;
+    in property <bool> cue-trim-route;
+    in property <int> cue-trim-track: -1;
+    in property <[string]> cue-trim-slots;
+    in property <int> cue-trim-slot: -1;
+    in property <int> cue-trim-reference: -2;
+    in property <int> cue-trim-suggested: -1;
+    in property <string> cue-trim-position;
+    in property <string> cue-trim-status;
+    callback open-cue-trim();
+    callback open-set-planning();
+    callback open-source-monitor();
+    callback open-sampler-tools();
+    callback open-crate-order();
+    callback close-cue-trim();
+    callback select-cue-trim-slot(int);
+    callback select-cue-trim-reference(int);
+    callback move-cue-trim(int);
+    callback set-cue-trim-position(string);
+    callback audition-cue-trim();
+    callback stop-cue-trim();
+    callback save-cue-trim();
+    in property <bool> chord-pair-open;
+    in property <bool> chord-pair-busy;
+    in property <bool> chord-pair-route;
+    in property <string> chord-pair-a;
+    in property <string> chord-pair-b;
+    in property <string> chord-pair-status;
+    in property <[ChordPairRow]> chord-pair-rows;
+    in property <int> chord-pair-index: -1;
+    callback open-chord-pair();
+    callback close-chord-pair();
+    callback use-chord-track(int);
+    callback compare-chord-pair(ChordPairSettings);
+    callback select-chord-row(int);
+    callback confirm-chord-event(int, string);
+    callback export-chord-midi(int);
+    callback audition-chord-pair();
+    callback stop-chord-pair();
     in property <bool> local-keys-open;
     in property <bool> local-keys-busy;
     in property <string> local-keys-status;
@@ -804,6 +880,18 @@ export component AppWindow inherits Window {
     private property <bool> prepare-visible: root.library-tab == 4 && !root.settings-open
         && (root.view-mode == LayoutMode.Classic || root.modern-library-open);
     out property <bool> reference-editor-visible: root.prepare-visible && root.cover-label-editor.open && !root.import-review-open;
+    out property <bool> cue-trim-visible: root.prepare-visible && root.cue-trim-open
+        && root.selected-track > 0 && root.cue-trim-track == root.selected-track
+        && !root.import-review-open && !root.tempo-comparison.open && !root.cover-label-editor.open
+        && !root.metadata-diagnosis.open && !root.gig-planning-open && !root.samp-preview-open
+        && !root.local-keys-open && !root.clip-check-open && !root.chord-pair-open;
+    private property <bool> cue-trim-obsolete: root.cue-trim-open && !root.cue-trim-visible;
+    changed cue-trim-obsolete => { if root.cue-trim-obsolete { root.close-cue-trim(); } }
+    out property <bool> chord-pair-visible: root.prepare-visible && root.chord-pair-open && !root.import-review-open
+        && !root.tempo-comparison.open && !root.cover-label-editor.open && !root.metadata-diagnosis.open
+        && !root.clip-check-open && !root.gig-planning-open && !root.samp-preview-open && !root.local-keys-open;
+    private property <bool> chord-pair-obsolete: root.chord-pair-open && !root.chord-pair-visible;
+    changed chord-pair-obsolete => { if root.chord-pair-obsolete { root.close-chord-pair(); } }
     out property <bool> local-keys-visible: root.prepare-visible && root.local-keys-open
         && !root.import-review-open && root.local-keys-track == root.selected-track
         && !root.tempo-comparison.open && !root.cover-label-editor.open && !root.metadata-diagnosis.open
@@ -841,6 +929,11 @@ export component AppWindow inherits Window {
     in property <bool> library-has-analysis-targets;
     in property <bool> analysis-running;
     in property <[float]> analysis-waveform;
+    in property <[float]> layer-percussion;
+    in property <[float]> layer-tonal;
+    in property <string> layer-status;
+    in-out property <bool> split-waveform;
+    out property <bool> layer-view-active: root.prepare-visible && root.split-waveform;
     callback library-tab-selected(int);
     callback prep-action(int);
     in property <int> prep-queue-count;
@@ -882,6 +975,8 @@ export component AppWindow inherits Window {
         width: 100%; height: 100%;
         capture-key-pressed(event) => {
             if event.text == Key.Escape && root.samp-preview-open { root.close-sample-browser(); return accept; }
+            if event.text == Key.Escape && root.cue-trim-visible { root.close-cue-trim(); root.focus-library-tracks(); return accept; }
+            if event.text == Key.Escape && root.chord-pair-open { root.close-chord-pair(); root.focus-library-tracks(); return accept; }
             if event.text == Key.Escape && root.local-keys-open { root.close-local-keys(); root.focus-library-tracks(); return accept; }
             if event.text == Key.Escape && root.clip-check-open { root.close-clip-check(); return accept; }
             if event.text == Key.Escape && root.cancel-library-drag() { return accept; }
@@ -901,7 +996,7 @@ export component AppWindow inherits Window {
                 return reject;
             }
             if root.more-open && event.text == Key.Escape { root.more-open = false; more-button.focus(); return accept; }
-            if root.cover-label-editor.open || track-library.import-text-focused || track-library.diagnosis-text-focused || track-library.gig-text-focused || track-library.local-key-text-focused { return reject; }
+            if root.cover-label-editor.open || track-library.import-text-focused || track-library.diagnosis-text-focused || track-library.gig-text-focused || track-library.local-key-text-focused || track-library.chord-pair-text-focused || root.cue-trim-visible { return reject; }
             if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta && event.modifiers.shift {
                 if event.text == Key.LeftArrow {
                     if !event.repeat { root.load-library-left(); }
@@ -988,6 +1083,10 @@ export component AppWindow inherits Window {
             height: root.view-mode == LayoutMode.Classic ? 344px + (root.four-decks ? 124px : 0px) : 0px;
             spacing: 4px;
             left-deck := CompactDeck {
+                section-jump: root.left-section;
+                select-section(i) => { root.select-section-target(0, i); }
+                arm-section => { root.arm-section-jump(0); }
+                cancel-section => { root.cancel-section-jump(0); }
             row: 0; col: 0;
 
                 pad-sampler: root.left-pad-sampler; pad-mode => { root.pad-mode(0,true,false); }
@@ -1039,6 +1138,10 @@ export component AppWindow inherits Window {
                 load => { root.load-left(); } toggle => { root.toggle-left(); } cue => { root.reset-left(); } eject => { root.eject-left(); } seek(value) => { root.seek-left(value); }
             }
             right-deck := CompactDeck {
+                section-jump: root.right-section;
+                select-section(i) => { root.select-section-target(1, i); }
+                arm-section => { root.arm-section-jump(1); }
+                cancel-section => { root.cancel-section-jump(1); }
             row: 0; col: 1;
 
                 pad-sampler: root.right-pad-sampler; pad-mode => { root.pad-mode(1,true,false); }
@@ -1102,6 +1205,10 @@ export component AppWindow inherits Window {
         }
     }
         modern-view := ModernView {
+            left-section: root.left-section; right-section: root.right-section;
+            select-section-target(deck, i) => { root.select-section-target(deck, i); }
+            arm-section-jump(deck) => { root.arm-section-jump(deck); }
+            cancel-section-jump(deck) => { root.cancel-section-jump(deck); }
             visible: root.view-mode == LayoutMode.Modern;
             vertical-stretch: root.view-mode == LayoutMode.Modern ? 1 : 0;
             min-height: root.view-mode == LayoutMode.Modern ? (root.four-decks ? 500px : 420px) : 0px;
@@ -1236,6 +1343,7 @@ export component AppWindow inherits Window {
             vertical-stretch: 0; background: DjTheme.panel-dark;
             VerticalLayout { spacing: 2px;
                 DetailWaveform {
+                    section-mark: root.section-mark-left;
                     deck-label: "DECK A"; accent: DjTheme.deck-a; detail: root.left-detail; colors: root.left-detail-colors;
                     loop-range: root.left-detail-loop-range;
                     hot-cues: root.left-hot-cues; beats: root.left-beats; position: root.left-position; marker: root.left-detail-marker;
@@ -1258,6 +1366,7 @@ export component AppWindow inherits Window {
                     set-grid => { root.grid-left(); } clear-grid => { root.clear-grid-left(); }
                 }
                 DetailWaveform {
+                    section-mark: root.section-mark-right;
                     deck-label: "DECK B"; accent: DjTheme.deck-b; detail: root.right-detail; colors: root.right-detail-colors;
                     loop-range: root.right-detail-loop-range;
                     hot-cues: root.right-hot-cues; beats: root.right-beats; position: root.right-position; marker: root.right-detail-marker;
@@ -1343,7 +1452,8 @@ Rectangle {
 
         Rectangle {
             visible: root.view-mode == LayoutMode.Classic || root.modern-library-open;
-            accessible-role: groupbox; accessible-label: "Track library area"; vertical-stretch: 1; min-height: root.virtual-decks-visible ? 100px : 160px;
+            accessible-role: groupbox; accessible-label: "Track library area"; vertical-stretch: 1;
+            min-height: root.prepare-visible ? 220px : (root.virtual-decks-visible ? 100px : 160px);
             HorizontalLayout { spacing: 6px;
                 CratePanel {
                     managing: root.library-tab == 2;
@@ -1353,6 +1463,7 @@ Rectangle {
                     busy: root.loading || root.library-busy || !root.audio-enabled;
                     has-track: root.selected-track >= 0;
                     selected-smart: root.selected-crate-smart;
+                    open-crate-order => { root.open-crate-order(); }
                     target-index <=> root.target-crate-index;
                     editor-open: root.crate-editor-open; delete-pending: root.crate-delete-pending;
                     dialog-title: root.crate-dialog-title; editor-smart: root.crate-editor-smart;
@@ -1395,8 +1506,38 @@ Rectangle {
             sort-field: root.table-sort-field; sort-descending: root.table-sort-descending; columns-enabled: root.table-columns-enabled;
             change-column(id, action) => { root.change-table-column(id, action); }
             analysis-title: root.analysis-title; analysis-summary: root.analysis-summary; analysis-waveform: root.analysis-waveform;
+            layer-percussion: root.layer-percussion; layer-tonal: root.layer-tonal;
+            layer-status: root.layer-status; split-waveform <=> root.split-waveform;
             tempo-comparison: root.tempo-comparison;
             metadata-diagnosis: root.metadata-diagnosis;
+            cue-trim-open: root.cue-trim-visible;
+            cue-trim-busy: root.cue-trim-busy; cue-trim-route: root.cue-trim-route;
+            cue-trim-track: root.cue-trim-track; cue-trim-slots: root.cue-trim-slots; cue-trim-slot: root.cue-trim-slot;
+            cue-trim-reference: root.cue-trim-reference; cue-trim-suggested: root.cue-trim-suggested;
+            cue-trim-position: root.cue-trim-position; cue-trim-status: root.cue-trim-status;
+            open-cue-trim => { root.open-cue-trim(); }
+            open-set-planning => { root.open-set-planning(); }
+            close-cue-trim => { root.close-cue-trim(); }
+            select-cue-trim-slot(i) => { root.select-cue-trim-slot(i); }
+            select-cue-trim-reference(i) => { root.select-cue-trim-reference(i); }
+            move-cue-trim(direction) => { root.move-cue-trim(direction); }
+            set-cue-trim-position(seconds) => { root.set-cue-trim-position(seconds); }
+            audition-cue-trim => { root.audition-cue-trim(); }
+            stop-cue-trim => { root.stop-cue-trim(); }
+            save-cue-trim => { root.save-cue-trim(); }
+            chord-pair-open: root.chord-pair-visible;
+            chord-pair-busy: root.chord-pair-busy; chord-pair-route: root.chord-pair-route;
+            chord-pair-a: root.chord-pair-a; chord-pair-b: root.chord-pair-b;
+            chord-pair-status: root.chord-pair-status; chord-pair-rows: root.chord-pair-rows; chord-pair-index: root.chord-pair-index;
+            open-chord-pair => { root.open-chord-pair(); }
+            close-chord-pair => { root.close-chord-pair(); }
+            use-chord-track(side) => { root.use-chord-track(side); }
+            compare-chord-pair(settings) => { root.compare-chord-pair(settings); }
+            select-chord-row(index) => { root.select-chord-row(index); }
+            confirm-chord-event(side, label) => { root.confirm-chord-event(side, label); }
+            export-chord-midi(side)=>{root.export-chord-midi(side);}
+            audition-chord-pair => { root.audition-chord-pair(); }
+            stop-chord-pair => { root.stop-chord-pair(); }
             local-keys-open: root.local-keys-visible;
             local-keys-status: root.local-keys-status;
             local-keys-busy: root.local-keys-busy;
@@ -1660,6 +1801,7 @@ Rectangle {
             padding:10px;spacing:8px;
             HorizontalLayout {
                 Text {text:"HEADPHONE CUE — OUT 3/4";color:DjTheme.text-primary;}
+                Button {text:"Source monitor";accessible-label:"Analyze deck or master audio";clicked=>{root.open-source-monitor();}}
                 Button {text:"CLOSE MON";accessible-label:"Close headphone monitor";clicked=>{if root.settings-open { root.close-settings(); } else { root.monitor-open=false; }}}
             }
             Text {text:root.monitor-status;color:DjTheme.text-primary;}
@@ -1690,7 +1832,7 @@ Rectangle {
         }
         if !root.samp-preview-open : VerticalLayout {
             padding:10px;spacing:8px;
-            HorizontalLayout {Text {text:root.sampler-status;color:DjTheme.text-primary;overflow:elide;}Button {text:"STOP ALL";accessible-label:"Stop all sampler slots";clicked=>{root.sampler-action(0,4,false);}}Button {text:"CLOSE";accessible-label:"Close sampler";clicked=>{root.sampler-open=false;}}}
+            HorizontalLayout {Text {text:root.sampler-status;color:DjTheme.text-primary;overflow:elide;}Button {text:"Pad tools";clicked=>{root.open-sampler-tools();}}Button {text:"STOP ALL";accessible-label:"Stop all sampler slots";clicked=>{root.sampler-action(0,4,false);}}Button {text:"CLOSE";accessible-label:"Close sampler";clicked=>{root.sampler-open=false;}}}
             for slot[index] in root.sampler-slots : HorizontalLayout {
                 Text {text:(index+1)+" · "+slot.name+(slot.playing ? " · PLAYING" : slot.busy ? " · PREPARING" : "");color:slot.playing ? #ffc15e : DjTheme.text-primary;overflow:elide;horizontal-stretch:1;}
                 Button {text:"LOAD";accessible-label:"Sampler slot "+(index+1)+" load";enabled:root.sampler-ready && !root.sampler-loading;clicked=>{root.sampler-action(index,2,false);}}
@@ -1699,7 +1841,10 @@ Rectangle {
                 Button {text:"STOP";accessible-label:"Sampler slot "+(index+1)+" stop";clicked=>{root.sampler-action(index,1,false);}}
                 Button {text:"CLEAR";accessible-label:"Sampler slot "+(index+1)+" clear";enabled:slot.occupied || slot.busy;clicked=>{root.sampler-action(index,3,false);}}
             }
-            Text {text:"SAMPLER LEVEL "+round(root.sampler-gain)+"% · One-shot / retrigger · 4 voices";color:DjTheme.text-secondary;}
+            HorizontalLayout {
+                Text {text:"SAMPLER LEVEL "+round(root.sampler-gain)+"% · One-shot / retrigger · 4 voices";color:DjTheme.text-secondary;horizontal-stretch:1;}
+                Button { text:"Patterns / Fill"; accessible-label:"Record pad phrases and play drum fills"; clicked=>{root.open-pad-patterns();} }
+            }
             Slider {minimum:0;maximum:100;value <=> root.sampler-gain;enabled:root.sampler-ready;accessible-label:"Sampler master level"; changed => { root.sampler-level(); }}
             Text {text:"Mono/stereo, up to10s /480000 source frames. Restored samples stay stopped.";color:#a6b4c8;}
         }

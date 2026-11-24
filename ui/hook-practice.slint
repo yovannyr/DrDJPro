@@ -1,0 +1,33 @@
+import { Button,ComboBox,LineEdit,ListView } from "std-widgets.slint";
+import { DjTheme } from "theme.slint";
+export component HookPracticeWindow inherits Window{
+    title:"Hook practice";preferred-width:740px;preferred-height:510px;min-width:600px;min-height:450px;background:DjTheme.app-bg;
+    in property<string> track;in property<[string]> cues;in property<[string]> steps;in property<int> selected:-1;
+    in property<bool> running;in property<string> status;in-out property<string> target-time:"30";in-out property<string> tolerance:"2";
+    callback use-track();callback add-step(int);callback choose(int);callback move-step(int);callback remove-step();callback edit-time(string,string);callback load(bool);
+    callback start();callback trigger();callback skip();callback end();callback dismiss();
+    VerticalLayout{
+        padding:12px;spacing:7px;
+        HorizontalLayout{spacing:5px;Button{text:"Use selected track";enabled:!root.running;clicked=>{root.use-track();}}
+            Text{text:root.track;color:DjTheme.text-primary;horizontal-stretch:1;overflow:elide;vertical-alignment:center;}
+            cue:=ComboBox{model:root.cues;enabled:!root.running;accessible-label:"Saved cue on MC4000 pad 1 to 4";}
+            Button{text:"Add";enabled:!root.running && root.cues.length>0 && root.steps.length<5;clicked=>{root.add-step(cue.current-index);}}}
+        ListView{vertical-stretch:1;for row[i] in root.steps:Button{text:row;checked:root.selected==i;checkable:true;clicked=>{root.choose(i);}}}
+        HorizontalLayout{spacing:5px;Button{text:"Up";enabled:!root.running&&root.selected>0;clicked=>{root.move-step(-1);}}
+            Button{text:"Down";enabled:!root.running&&root.selected>=0&&root.selected+1<root.steps.length;clicked=>{root.move-step(1);}}
+            Button{text:"Remove";enabled:!root.running&&root.selected>=0;clicked=>{root.remove-step();}}
+            Button{text:"Load A";enabled:root.selected>=0;clicked=>{root.load(false);}}
+            Button{text:"Load B";enabled:root.selected>=0;clicked=>{root.load(true);}}}
+        HorizontalLayout{spacing:5px;
+            Text{text:"Target (s from start)";color:DjTheme.text-secondary;vertical-alignment:center;}LineEdit{width:72px;text<=>root.target-time;}
+            Text{text:"± (s)";color:DjTheme.text-secondary;vertical-alignment:center;}LineEdit{width:64px;text<=>root.tolerance;}
+            Button{text:"Set window";enabled:!root.running&&root.selected>0;clicked=>{root.edit-time(root.target-time,root.tolerance);}}}
+        HorizontalLayout{spacing:5px;
+            Button{text:"Start run";enabled:!root.running&&root.steps.length>=3;clicked=>{root.start();}}
+            Button{text:"Play selected hook";enabled:root.running&&root.selected>=0;clicked=>{root.trigger();}}
+            Button{text:"Skip next";enabled:root.running;clicked=>{root.skip();}}
+            Button{text:"End run";clicked=>{root.end();}}
+            Rectangle{horizontal-stretch:1;}Button{text:"Close";clicked=>{root.dismiss();}}}
+        Text{text:root.status;wrap:word-wrap;color:DjTheme.text-secondary;}
+    }
+}
