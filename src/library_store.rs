@@ -1,9 +1,11 @@
 //! SQLite catalog storage. The worker owns every database/file operation.
 mod gigs;
+mod local_keys;
 mod prepare_grid;
 use crate::library::{self, Catalog, Library, SavedTrack};
 use crate::output_preferences::{OutputRoute, OutputRoutes, MAX_ROUTES_BYTES};
 use crate::preferences::QuantizePreferences;
+pub(crate) use local_keys::LocalKeyCache;
 use prepare_grid::PrepareGridWrite;
 const OUTPUT_ROUTES_QUERY:&str="SELECT CASE WHEN length(CAST(value AS BLOB))<=65536 THEN value ELSE '' END FROM library_meta WHERE key='audio_output_routes_v1'";
 const QUANTIZE_PREFS_QUERY: &str = "SELECT CASE WHEN length(CAST(value AS BLOB))<=1024 THEN value ELSE '' END FROM library_meta WHERE key='quantize_preferences_v1'";
@@ -21,7 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 const APPLICATION_ID: i32 = 0x4452444a;
-const SCHEMA_VERSION: i32 = 21;
+const SCHEMA_VERSION: i32 = 22;
 const DECK_SESSION_QUERY: &str = "SELECT CASE WHEN length(CAST(value AS BLOB))<=256 THEN value ELSE '' END FROM library_meta WHERE key='deck_session_v1'";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -1080,6 +1082,7 @@ fn initialize(connection: &mut Connection, catalog: &Catalog, source: &str) -> R
     create_history_schema(&transaction)?;
     create_prep_schema(&transaction)?;
     gigs::schema(&transaction)?;
+    local_keys::schema(&transaction)?;
     transaction
         .pragma_update(None, "application_id", APPLICATION_ID)
         .map_err(|e| e.to_string())?;
@@ -1344,6 +1347,9 @@ impl Store {
             }
             if version < 21 {
                 gigs::schema(&tx)?;
+            }
+            if version < 22 {
+                local_keys::schema(&tx)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)
                 .map_err(|e| e.to_string())?;
@@ -1933,6 +1939,7 @@ pub enum Event {
 }
 enum Command {
     PrepareGrid(Box<PrepareGridWrite>),
+    LocalKey(Box<local_keys::LocalKeyRequest>),
     SaveSampler(
         crate::sampler::Preferences,
         Option<mpsc::Sender<Result<(), String>>>,
@@ -2075,6 +2082,7 @@ impl Worker {
                             let result = store.apply_prepare_grid(&request);
                             let _ = request.reply.send(result);
                         }
+                        Command::LocalKey(request) => request.run(&store),
                         Command::SaveDelta(delta, preferences, output, fx, deck_session, columns) => {
                             let result = store.save_session_state_with_columns(
                                 &delta,

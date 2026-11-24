@@ -13,7 +13,7 @@ pub(crate) const PREVIEW_DURATION: Duration = Duration::from_secs(8);
 const SAMPLE_DURATION: Duration = Duration::from_secs(3);
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct SampleVersion {
+pub(crate) struct SampleVersion {
     path: PathBuf,
     start: Duration,
     stamp: Stamp,
@@ -21,7 +21,7 @@ pub(super) struct SampleVersion {
 }
 
 impl SampleVersion {
-    pub(super) fn read(path: &Path, start: Duration) -> Result<Option<Self>, String> {
+    pub(crate) fn read(path: &Path, start: Duration) -> Result<Option<Self>, String> {
         let file = crate::media_input::open_regular(path)
             .map_err(|e| format!("Cannot inspect sample: {e}"))?;
         Ok(Stamp::for_cache(&file)

@@ -33,6 +33,7 @@ mod legacy_catalog;
 mod library;
 mod library_perf;
 mod library_store;
+mod local_harmony;
 mod looping;
 mod mc4000;
 mod media_input;

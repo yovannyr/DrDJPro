@@ -4,6 +4,7 @@ mod cover_labels;
 mod gigs;
 mod import_review;
 mod itunes;
+mod local_keys;
 mod metadata_diagnosis;
 mod reference_piano;
 mod sample_browser;
@@ -347,6 +348,7 @@ impl SearchWorker {
 }
 
 pub struct AudioController {
+    local_keys: RefCell<local_keys::State>,
     clip_check: RefCell<clip_check::State>,
     diagnosis: RefCell<metadata_diagnosis::State>,
     comparison: RefCell<Option<tempo_comparison::Comparison>>,
@@ -465,6 +467,7 @@ pub struct AudioController {
 }
 impl Drop for AudioController {
     fn drop(&mut self) {
+        self.close_local_keys();
         self.close_clip_check();
         self.close_sample_browser();
         self.close_reference_editor();
@@ -576,6 +579,7 @@ impl AudioController {
             comparison: RefCell::default(),
             preview_job: RefCell::default(),
             reference: RefCell::default(),
+            local_keys: RefCell::default(),
             clip_check: RefCell::default(),
             sample_browser: RefCell::default(),
             library: Rc::new(RefCell::new(crate::library::Library::default())),
@@ -1329,6 +1333,7 @@ impl AudioController {
         controller.wire_reference_piano(ui);
         controller.wire_sample_browser(ui);
         controller.wire_clip_check(ui);
+        controller.wire_local_keys(ui);
         controller.wire_hot_cues(ui);
         controller.wire_loops(ui);
         controller.wire_pitch(ui);
@@ -5030,6 +5035,7 @@ impl AudioController {
         self.refresh();
     }
     pub fn restore_library(&self, path: Result<PathBuf, String>, initial_paths: Vec<PathBuf>) {
+        self.close_local_keys();
         self.close_clip_check();
         self.close_sample_browser();
         self.close_reference_editor();
@@ -5812,6 +5818,7 @@ impl AudioController {
         }
     }
     pub fn close_library(&self) -> Result<(), String> {
+        self.close_local_keys();
         self.close_clip_check();
         self.close_sample_browser();
         self.invalidate_suggestion();
@@ -7207,6 +7214,7 @@ impl AudioController {
         self.poll_tempo_comparison();
         self.poll_reference();
         self.poll_sample_browser();
+        self.poll_local_keys();
         self.poll_clip_check();
         if self.covers.borrow_mut().poll() {
             if let Some(ui) = self.ui.upgrade() {
@@ -8041,6 +8049,7 @@ impl AudioController {
             self.publish_gig_rule(ui, selected, "");
         }
         if changed || ui.get_library_tab() != 4 {
+            self.close_local_keys();
             self.close_clip_check();
             self.close_reference_editor();
             self.close_metadata_diagnosis();
@@ -9570,6 +9579,10 @@ mod tests {
     mod clip_check_workflow {
         use super::*;
         include!("controller/clip_check_tests.rs");
+    }
+    mod local_key_workflow {
+        use super::*;
+        include!("controller/local_keys_tests.rs");
     }
     mod cover_label_workflow {
         use super::*;

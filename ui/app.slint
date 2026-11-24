@@ -298,7 +298,7 @@ export component AppWindow inherits Window {
     callback controller-cancel-load-gesture();
     in-out property <bool> controller-browser-crates;
     out property <bool> controller-editor-open: root.crate-editor-open || root.cover-label-editor.open || root.left-grid-editing || root.right-grid-editing || root.left-cue-editing || root.right-cue-editing || left-deck.loop-name-focused || right-deck.loop-name-focused;
-    out property <bool> controller-search-focused: track-library.search-focused || track-library.import-text-focused || track-library.diagnosis-text-focused || track-library.gig-text-focused;
+    out property <bool> controller-search-focused: track-library.search-focused || track-library.import-text-focused || track-library.diagnosis-text-focused || track-library.gig-text-focused || track-library.local-key-text-focused;
     callback focus-library-tracks();
     focus-library-tracks => { track-library.focus-tracks(); }
     callback reveal-library-row(int);
@@ -765,6 +765,16 @@ export component AppWindow inherits Window {
     in property <TempoComparisonView> tempo-comparison;
     callback open-tempo-comparison();
     in property <MetadataDiagnosisView> metadata-diagnosis;
+    in property <bool> local-keys-open;
+    in property <bool> local-keys-busy;
+    in property <string> local-keys-status;
+    in property <string> local-keys-entry;
+    in property <string> local-keys-exit;
+    in property <[string]> local-keys-sections;
+    callback open-local-keys();
+    callback close-local-keys();
+    callback select-local-key-times(string, string);
+    in property <int> local-keys-track: -1;
     in property <bool> clip-check-open;
     in property <[string]> clip-check-markers;
     in property <int> clip-check-index: -1;
@@ -794,6 +804,12 @@ export component AppWindow inherits Window {
     private property <bool> prepare-visible: root.library-tab == 4 && !root.settings-open
         && (root.view-mode == LayoutMode.Classic || root.modern-library-open);
     out property <bool> reference-editor-visible: root.prepare-visible && root.cover-label-editor.open && !root.import-review-open;
+    out property <bool> local-keys-visible: root.prepare-visible && root.local-keys-open
+        && !root.import-review-open && root.local-keys-track == root.selected-track
+        && !root.tempo-comparison.open && !root.cover-label-editor.open && !root.metadata-diagnosis.open
+        && !root.clip-check-open && !root.gig-planning-open && !root.samp-preview-open;
+    private property <bool> local-keys-obsolete: root.local-keys-open && !root.local-keys-visible;
+    changed local-keys-obsolete => { if root.local-keys-obsolete { root.close-local-keys(); } }
     out property <bool> clip-check-visible: root.prepare-visible && root.clip-check-open && !root.import-review-open
         && root.clip-check-track == root.selected-track;
     private property <bool> clip-check-obsolete: root.clip-check-open && !root.clip-check-visible;
@@ -866,6 +882,7 @@ export component AppWindow inherits Window {
         width: 100%; height: 100%;
         capture-key-pressed(event) => {
             if event.text == Key.Escape && root.samp-preview-open { root.close-sample-browser(); return accept; }
+            if event.text == Key.Escape && root.local-keys-open { root.close-local-keys(); root.focus-library-tracks(); return accept; }
             if event.text == Key.Escape && root.clip-check-open { root.close-clip-check(); return accept; }
             if event.text == Key.Escape && root.cancel-library-drag() { return accept; }
             if event.text == Key.Escape && root.gig-planning-open && !root.gig-planning-obsolete {
@@ -884,7 +901,7 @@ export component AppWindow inherits Window {
                 return reject;
             }
             if root.more-open && event.text == Key.Escape { root.more-open = false; more-button.focus(); return accept; }
-            if root.cover-label-editor.open || track-library.import-text-focused || track-library.diagnosis-text-focused || track-library.gig-text-focused { return reject; }
+            if root.cover-label-editor.open || track-library.import-text-focused || track-library.diagnosis-text-focused || track-library.gig-text-focused || track-library.local-key-text-focused { return reject; }
             if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta && event.modifiers.shift {
                 if event.text == Key.LeftArrow {
                     if !event.repeat { root.load-library-left(); }
@@ -1380,6 +1397,14 @@ Rectangle {
             analysis-title: root.analysis-title; analysis-summary: root.analysis-summary; analysis-waveform: root.analysis-waveform;
             tempo-comparison: root.tempo-comparison;
             metadata-diagnosis: root.metadata-diagnosis;
+            local-keys-open: root.local-keys-visible;
+            local-keys-status: root.local-keys-status;
+            local-keys-busy: root.local-keys-busy;
+            local-keys-sections: root.local-keys-sections;
+            local-keys-entry: root.local-keys-entry; local-keys-exit: root.local-keys-exit;
+            open-local-keys => { root.open-local-keys(); }
+            close-local-keys => { root.close-local-keys(); }
+            select-local-key-times(entry, exit) => { root.select-local-key-times(entry, exit); }
             clip-check-open: root.clip-check-visible;
             clip-check-markers: root.clip-check-markers;
             clip-check-index: root.clip-check-index; clip-check-status: root.clip-check-status;

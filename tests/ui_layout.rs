@@ -560,6 +560,80 @@ fn cover_labels_show_confirmed_catalog_values_in_both_layouts() {
 }
 
 #[test]
+fn local_keys_query_both_positions_and_close_on_selection_change() {
+    use slint::platform::WindowEvent;
+
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_modern_library_open(true);
+        ui.set_library_tab(4);
+        ui.set_selected_track(17);
+        let target = ui.as_weak();
+        ui.on_open_local_keys(move || {
+            let ui = target.unwrap();
+            ui.set_local_keys_track(17);
+            ui.set_local_keys_sections(slint::ModelRc::from([
+                "0–8 s · 8B".into(),
+                "8–16 s · 10B".into(),
+            ]));
+            ui.set_local_keys_open(true);
+        });
+        let target = ui.as_weak();
+        ui.on_close_local_keys(move || target.unwrap().set_local_keys_open(false));
+        let cues = Rc::new(Cell::new(0));
+        let observed = cues.clone();
+        ui.on_hold_hot_cue_left(move |_, _, _| observed.set(observed.get() + 1));
+        let target = ui.as_weak();
+        ui.on_select_local_key_times(move |start, end| {
+            assert_eq!((start.as_str(), end.as_str()), ("4.25", "12"));
+            let ui = target.unwrap();
+            ui.set_local_keys_entry("8B".into());
+            ui.set_local_keys_exit("10B".into());
+        });
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        click(&ui, "Inspect local key changes");
+        assert!(ui.get_local_keys_visible());
+        slint::platform::update_timers_and_animations();
+        assert!(ui.get_controller_search_focused());
+        ui.window()
+            .dispatch_event(WindowEvent::KeyPressed { text: "1".into() });
+        ui.window()
+            .dispatch_event(WindowEvent::KeyReleased { text: "1".into() });
+        assert_eq!(cues.get(), 0);
+        let control = |label| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .next()
+                .unwrap()
+        };
+        control("Entry time in seconds").set_accessible_value("4.25");
+        control("Exit time in seconds").set_accessible_value("12");
+        ui.set_local_keys_busy(true);
+        assert_eq!(
+            control("Find keys at entry and exit").accessible_enabled(),
+            Some(false)
+        );
+        ui.set_local_keys_busy(false);
+        click(&ui, "Find keys at entry and exit");
+        assert_eq!(
+            control("Key at entry").accessible_description().as_deref(),
+            Some("8B")
+        );
+        assert_eq!(
+            control("Key at exit").accessible_description().as_deref(),
+            Some("10B")
+        );
+        ui.set_selected_track(18);
+        assert!(!ui.get_local_keys_visible());
+        slint::platform::update_timers_and_animations();
+        assert!(!ui.get_local_keys_open());
+        assert!(!ui.get_controller_search_focused());
+    }
+}
+
+#[test]
 fn clipped_peak_inspection_exposes_matched_auditions_and_an_explicit_export() {
     i_slint_backend_testing::init_no_event_loop();
     for mode in [LayoutMode::Classic, LayoutMode::Modern] {

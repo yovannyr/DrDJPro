@@ -10,9 +10,10 @@
 | 4 · R05 | [BPM und Tonart aus Dateitag, Analyse und Katalog vergleichen](13-library-management/R05_ABNAHME.md). Schreibschutz, Dateiformate, Auswahlwechsel und Audiolast unter Windows geprüft. | Diagnose und Hörvergleich mit eigenen widersprüchlich getaggten Titeln |
 | 5 · R02 | [Wünsche, Pflichttracks und Ausschlüsse pro Auftritt](24-smart-playlist-manager/R02_ABNAHME.md). Neustart, Vorschläge, bestätigte Wiedergabe und Audiolast geprüft. | Zwei eigene Auftritte am Controller vergleichen |
 | 6 · A07 | [Tonart mit dem Referenzpiano prüfen](6-key-detection/A07_ABNAHME.md). Grundton und Dreiklang, getrennte Ausgänge, Bestätigung/Reset und Audiolast geprüft. | Eigene Passage mit dem MC4000 abhören |
-| 7 · M01 | [Sample-Browser mit getrenntem Vorhören](19-sampler-section/M01_ABNAHME.md). Zwanzig Samples, vier belegte Pads, Dateiaustausch, Neustart und Audiolast geprüft. | Eigene Samples am Controller wählen und zuweisen |
+| 7 · M01 | [Sample-Browser mit getrenntem Vorhören](19-sampler-section/M01_ABNAHME.md). Zwanzig Samples, vier belegte Pads, Dateiaustausch, Neustart und Audiolast geprüft. [CI auf Windows, macOS und Ubuntu bestanden](https://github.com/yovannyr/DrDJPro/actions/runs/45289407652). | Eigene Samples am Controller wählen und zuweisen |
 | 8 · A01 | [Clipstellen prüfen, lautheitsangepasst vorhören und eine WAV-Kopie exportieren](10-audio-mastering/A01_ABNAHME.md). Signal-, Lautheits-, Export- und Lastmessungen unter Windows. | Mit eigenen Aufnahmen am Kopfhörer vergleichen |
-| 9–35 | Offen | Nach der Umsetzung |
+| 9 · A06 | [Lokale Tonarten am gewählten Ein- und Ausstieg](33-passage-harmony/A06_ABNAHME.md). Auf drei annotierten Aufnahmen waren 67,74 % der Dauer korrekt, 7 von 23 Wechseln wurden erkannt. In beiden Audioläufen keine verfehlte Frist. | Ein- und Ausstieg mit eigenen Tracks prüfen |
+| 10–35 | Offen | Nach der Umsetzung |
 
 ## Einstieg mit 85 oder 170 BPM
 

@@ -3,7 +3,7 @@ use super::*;
 use std::time::Instant;
 
 /// Measures render overruns, end-to-end deadline misses, invalid output blocks and heap allocations.
-pub(super) fn measure(
+pub(crate) fn measure(
     seconds: u64,
     check_load: impl FnMut() + Send,
 ) -> (usize, usize, usize, usize) {

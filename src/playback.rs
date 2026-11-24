@@ -7,7 +7,7 @@ pub(crate) mod tempo_preview;
 use crate::deck_render::{DeckRenderer, RenderControl, RenderFormat, SeekFrame};
 use crate::looping::{frame_at, frame_time, FrameLoop, PcmSource};
 use crate::playback_speed::PlaybackSpeed;
-pub(crate) use preview_clip::{PreviewClip, PREVIEW_DURATION};
+pub(crate) use preview_clip::{PreviewClip, SampleVersion, PREVIEW_DURATION};
 pub(crate) use sample_preview::SamplePreviewCache;
 /// Maximum resident decoded PCM capacity in the local sample browser cache.
 pub(crate) const MAX_SAMPLE_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
@@ -2270,6 +2270,9 @@ pub fn mix_files(a: &Path, b: &Path) -> Result<(), Box<dyn Error>> {
     engine.wait_for_end();
     Ok(())
 }
+
+#[cfg(test)]
+pub(crate) use tests::render_bench::measure as measure_two_decks;
 
 #[cfg(test)]
 mod tests {
@@ -5404,7 +5407,7 @@ mod tests {
     mod import_review_performance;
     mod key_reference;
     mod metadata_diagnosis_performance;
-    mod render_bench;
+    pub(super) mod render_bench;
     mod sample_preview;
     mod tempo_preview;
 

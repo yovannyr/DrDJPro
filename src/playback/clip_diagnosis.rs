@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use stream::stream;
+pub(crate) use stream::stream;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ClipRegion {
@@ -46,7 +46,7 @@ fn version(path: &Path, cancel: &Cancellation) -> Result<Version, String> {
     Ok(Version::Content(path.to_owned(), digest(path, cancel)?))
 }
 
-fn digest(path: &Path, cancel: &Cancellation) -> Result<[u8; 32], String> {
+pub(crate) fn digest(path: &Path, cancel: &Cancellation) -> Result<[u8; 32], String> {
     use sha2::{Digest, Sha256};
     let mut file = crate::media_input::open_regular(path).map_err(|e| e.to_string())?;
     let len = file.metadata().map_err(|e| e.to_string())?.len();

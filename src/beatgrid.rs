@@ -293,6 +293,22 @@ impl BeatGrid {
         }
         Ok(self.bar_start_beat_signed(i64::from(bar)))
     }
+    /// Project source milliseconds onto the current notated bar and beat, including warp and meter changes.
+    pub(crate) fn bar_beat_at_ms(self, milliseconds: u64) -> (i64, u8) {
+        let quarters = self.beat_at_time(Duration::from_millis(milliseconds).as_secs_f64()) + 1e-9;
+        let (bar, _) = self.bar_at_beat(quarters);
+        let (beats, denominator) = self
+            .meter_changes()
+            .iter()
+            .rev()
+            .find(|m| i64::from(m.bar) <= bar)
+            .map_or((self.beats_per_bar, self.meter_denominator), |m| {
+                (m.beats, m.denominator)
+            });
+        let offset = (quarters - self.bar_start_beat_signed(bar)) * f64::from(denominator) / 4.;
+        let beat = (offset.floor() + 1.).clamp(1., f64::from(beats)) as u8;
+        (bar, beat)
+    }
     fn bar_start_beat_signed(self, bar: i64) -> f64 {
         if bar <= 1 {
             return (bar - 1) as f64

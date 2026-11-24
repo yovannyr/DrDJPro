@@ -3,7 +3,7 @@ use std::{io::ErrorKind, path::Path};
 use symphonia::core::{audio::SampleBuffer, errors::Error};
 
 /// Decode native frames without seeking, resampling or merging corrupt/missing packets.
-pub(super) fn stream(
+pub(crate) fn stream(
     path: &Path,
     cancel: &Cancellation,
     mut consume: impl FnMut(u16, u32, &[f32]) -> Result<bool, String>,
@@ -12,7 +12,7 @@ pub(super) fn stream(
     let mut checked = |channels: u16, rate: u32, pcm: &[f32]| {
         cancel.check()?;
         if !(1..=2).contains(&channels) || !(8000..=192000).contains(&rate) {
-            return Err("Clip diagnosis supports mono/stereo at 8–192 kHz".into());
+            return Err("Offline analysis supports mono/stereo at 8–192 kHz".into());
         }
         if *format_seen.get_or_insert((channels, rate)) != (channels, rate) {
             return Err("Audio format changed during track".into());

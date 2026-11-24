@@ -5,6 +5,7 @@ import { LibraryButton } from "controls.slint";
 import { ImportReviewRow, ImportReviewPanel } from "import-review.slint";
 import { MetadataDiagnosisView, MetadataDiagnosisPanel } from "metadata-diagnosis.slint";
 import { GigRuleView, GigPlanningPanel } from "gig-planning.slint";
+import { LocalKeysPanel } from "local-keys.slint";
 import { ClipCheckPanel } from "clip-check.slint";
 
 export component CratePanel inherits Rectangle {
@@ -244,6 +245,16 @@ export component TrackLibrary inherits Rectangle {
     in property <TempoComparisonView> tempo-comparison;
     callback open-tempo-comparison();
     in property <MetadataDiagnosisView> metadata-diagnosis;
+    in property <bool> local-keys-open;
+    out property <bool> local-key-text-focused: key-panel.editing;
+    in property <bool> local-keys-busy;
+    in property <string> local-keys-status;
+    in property <string> local-keys-entry;
+    in property <string> local-keys-exit;
+    in property <[string]> local-keys-sections;
+    callback open-local-keys();
+    callback close-local-keys();
+    callback select-local-key-times(string, string);
     in property <bool> clip-check-open;
     in property <[string]> clip-check-markers;
     in property <int> clip-check-index: -1;
@@ -366,7 +377,7 @@ export component TrackLibrary inherits Rectangle {
             text: "Crates: select on the left; + / + Sub / + Smart create groups. Add / Remove manage the selected track.";
             color: #bbbbbb; font-size: 11px; wrap: word-wrap;
         }
-        if tab == 4 && !root.diagnosis-visible && !root.gig-visible && !root.clip-check-open : VerticalLayout {
+        if tab == 4 && !root.diagnosis-visible && !root.gig-visible && !root.clip-check-open && !root.local-keys-open : VerticalLayout {
             spacing: 2px;
             if root.analysis-progress != "" : Text { height: 14px; text: root.analysis-progress; accessible-role: text; accessible-label: "Library analysis progress"; accessible-description: root.analysis-progress; font-size: 11px; color: #cccccc; overflow: elide; }
             HorizontalLayout {
@@ -400,6 +411,15 @@ export component TrackLibrary inherits Rectangle {
                     clicked => { root.open-clip-check(); }
                 }
                 Text { horizontal-stretch: 1; vertical-alignment: center; text: root.analysis-title; font-size: 11px; color: #eeeeee; overflow: elide; }
+            }
+            if !root.tempo-comparison.open && !root.cover-label-editor.open : HorizontalLayout {
+                spacing: 3px;
+                LibraryButton {
+                    text: "Local keys"; accessible-label: "Inspect local key changes";
+                    enabled: root.selection > 0;
+                    clicked => { root.open-local-keys(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
             }
             Text { height: 14px; text: root.analysis-summary; accessible-role: text; accessible-label: "Prepare analysis results"; accessible-description: root.analysis-summary; font-size: 11px; color: #cccccc; overflow: elide; }
             if root.cover-label-editor.open : VerticalLayout {
@@ -485,6 +505,13 @@ export component TrackLibrary inherits Rectangle {
                     background: #209ac4;
                 }
             }
+        }
+        key-panel := LocalKeysPanel {
+            visible: root.local-keys-open;
+            sections: root.local-keys-sections; busy: root.local-keys-busy;
+            status: root.local-keys-status; entry: root.local-keys-entry; exit-key: root.local-keys-exit;
+            select-times(entry, exit) => { root.select-local-key-times(entry, exit); }
+            close => { root.close-local-keys(); root.focus-tracks(); }
         }
         if root.clip-check-open : ClipCheckPanel {
             markers: root.clip-check-markers; index: root.clip-check-index;
