@@ -89,28 +89,17 @@ impl State {
         }
         if let Some(data) = event.snapshot {
             let old_id = self.selected_id();
-            self.data = Some(data);
             if let Some(view) = &self.view {
                 let index = old_id
-                    .and_then(|id| self.data.as_ref()?.reports.iter().position(|r| r.id == id))
-                    .or_else(|| {
-                        self.data
-                            .as_ref()?
-                            .reports
-                            .iter()
-                            .position(|r| r.status == ReportStatus::Pending)
-                    })
-                    .or_else(|| (!self.data.as_ref()?.reports.is_empty()).then_some(0));
+                    .and_then(|id| data.reports.iter().position(|r| r.id == id))
+                    .or_else(|| data.consent_row())
+                    .or_else(|| (!data.reports.is_empty()).then_some(0));
                 view.set_selected_row(index.map_or(-1, |index| index as i32));
             }
+            self.data = Some(data);
         }
         self.message = event.message;
-        self.prompt = self.data.as_ref().is_some_and(|data| {
-            data.reports
-                .iter()
-                .any(|r| r.status == ReportStatus::Pending)
-                && (!data.settings.auto_submit || !data.endpoint_ready)
-        });
+        self.prompt = self.data.as_ref().and_then(Snapshot::consent_row).is_some();
         self.want_upload |= event.upload;
         self.render(event.settings_changed);
         self.advance();
@@ -182,16 +171,23 @@ impl State {
         let Some(id) = self.selected_id() else {
             return;
         };
-        let submitted = self.data.as_ref().is_some_and(|d| {
-            d.reports
-                .iter()
-                .any(|r| r.id == id && r.status == ReportStatus::Submitted)
-        });
+        let Some(data) = &self.data else {
+            return;
+        };
+        let submitted = data
+            .reports
+            .iter()
+            .any(|r| r.id == id && r.status == ReportStatus::Submitted);
         if submitted && !matches!(action, SelectionAction::Delete) {
             return;
         }
         self.dispatch(match action {
-            SelectionAction::Send => Action::Send(id),
+            SelectionAction::Send => {
+                let Some(destination_id) = &data.destination_id else {
+                    return;
+                };
+                Action::Send(id, destination_id.clone())
+            }
             SelectionAction::KeepLocal => Action::KeepLocal(id),
             SelectionAction::Delete => Action::Delete(id),
         });
@@ -230,10 +226,11 @@ impl State {
         view.set_logging_status(runtime_log::status().text().into());
         view.set_post_crash(self.prompt);
         if let Some(data) = &self.data {
-            view.set_endpoint_ready(data.endpoint_ready);
+            let endpoint_ready = data.destination_id.is_some();
+            view.set_endpoint_ready(endpoint_ready);
             view.set_settings_notice(data.settings_issue.clone().into());
             view.set_saved_destination(
-                if data.endpoint_ready {
+                if endpoint_ready {
                     data.settings.server_url.clone()
                 } else {
                     "Not configured or invalid".into()
@@ -263,6 +260,7 @@ impl State {
                     version: bounded(&r.version, 80).into(),
                     state: match r.status {
                         ReportStatus::Pending => "Needs consent",
+                        ReportStatus::NeedsConsent => "Renew consent",
                         ReportStatus::Declined => "Local only",
                         ReportStatus::Queued => "Authorized / queued",
                         ReportStatus::Submitted => "Server confirmed",
@@ -287,8 +285,13 @@ impl State {
                 .map_or_else(
                     || "No report selected".into(),
                     |r| {
+                        let consent = if r.status == ReportStatus::NeedsConsent {
+                            "Review the saved destination and choose SEND TEXT to authorize this report again.\n\n"
+                        } else {
+                            ""
+                        };
                         format!(
-                            "Version: {}\nOS: {} / {}\n\n{}",
+                            "{consent}Version: {}\nOS: {} / {}\n\n{}",
                             bounded(&r.version, 80),
                             bounded(&r.os, 80),
                             bounded(&r.arch, 80),
@@ -538,9 +541,7 @@ fn show(state: &Rc<RefCell<State>>, user: bool) {
         state.borrow_mut().view = Some(view);
         if let Some(data) = &state.borrow().data {
             let index = data
-                .reports
-                .iter()
-                .position(|r| r.status == ReportStatus::Pending)
+                .consent_row()
                 .or_else(|| (!data.reports.is_empty()).then_some(0));
             state
                 .borrow()

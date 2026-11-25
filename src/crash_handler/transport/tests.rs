@@ -1,4 +1,5 @@
 use super::*;
+use crate::crash_handler::ReportStatus;
 use flate2::read::GzDecoder;
 use std::{
     fs,
@@ -296,6 +297,195 @@ fn failure_is_durable_and_next_worker_retries_without_resending_success() {
 }
 
 #[test]
+fn destination_changed_after_compression_prevents_http_dispatch() {
+    let old = Server::start(acknowledged);
+    let new = Server::start(acknowledged);
+    let (_temp, store) = store(&old, false);
+    let report = store.insert("old approval").unwrap();
+    store.queue_report(&report.id).unwrap();
+    let destination = store.upload_destination().unwrap();
+    let claimed = store
+        .prepare_upload(&report.id, &destination)
+        .unwrap()
+        .unwrap();
+    let dispatched = upload(
+        &trusted().build().unwrap(),
+        &destination.url,
+        &claimed,
+        &AtomicBool::new(false),
+        || {
+            let mut settings = store.settings()?;
+            settings.server_url.clone_from(&new.url);
+            store.save_settings(&settings)?;
+            store.may_send(&claimed, &destination)
+        },
+    )
+    .unwrap();
+    assert!(!dispatched);
+    assert_eq!((old.count(), new.count()), (0, 0));
+    assert_eq!(status(&store, &report.id), ReportStatus::NeedsConsent);
+}
+
+#[test]
+fn changed_server_requires_each_queued_report_to_be_approved_again_after_restart() {
+    let original = Server::start(acknowledged);
+    let replacement = Server::start(acknowledged);
+    let (_temp, store) = store(&original, true);
+    let chosen = store.insert("first old report").unwrap();
+    let waiting = store.insert("second old report").unwrap();
+    store.queue_report(&chosen.id).unwrap();
+    store.queue_report(&waiting.id).unwrap();
+    let mut settings = store.settings().unwrap();
+    settings.server_url.clone_from(&replacement.url);
+    store.save_settings(&settings).unwrap();
+
+    let reopened = CrashStore::open(store.root().into()).unwrap();
+    assert_eq!(complete(&reopened, trusted()).submitted, 0);
+    assert_eq!(replacement.count(), 0);
+    assert_eq!(status(&reopened, &chosen.id), ReportStatus::NeedsConsent);
+    assert_eq!(status(&reopened, &waiting.id), ReportStatus::NeedsConsent);
+
+    assert!(reopened.queue_report(&chosen.id).unwrap());
+    assert_eq!(complete(&reopened, trusted()).submitted, 1);
+    assert_eq!(status(&reopened, &chosen.id), ReportStatus::Submitted);
+    assert_eq!(status(&reopened, &waiting.id), ReportStatus::NeedsConsent);
+    assert_eq!(replacement.count(), 1);
+    assert_eq!(
+        replacement.requests.lock().unwrap()[0].json()["id"],
+        chosen.id
+    );
+
+    settings.server_url.clone_from(&original.url);
+    reopened.save_settings(&settings).unwrap();
+    assert_eq!(complete(&reopened, trusted()).submitted, 0);
+    assert_eq!(original.count(), 0);
+    assert_eq!(status(&reopened, &waiting.id), ReportStatus::NeedsConsent);
+    assert_eq!(status(&reopened, &chosen.id), ReportStatus::Submitted);
+
+    assert!(reopened.queue_report(&waiting.id).unwrap());
+    settings.auto_submit = false;
+    settings.server_url.clear();
+    reopened.save_settings(&settings).unwrap();
+    assert_eq!(status(&reopened, &waiting.id), ReportStatus::NeedsConsent);
+    settings.server_url.clone_from(&original.url);
+    reopened.save_settings(&settings).unwrap();
+    assert_eq!(complete(&reopened, trusted()).submitted, 0);
+    assert_eq!(original.count(), 0);
+    assert_eq!(status(&reopened, &waiting.id), ReportStatus::NeedsConsent);
+}
+
+#[test]
+fn legacy_queue_can_retry_at_its_original_destination_until_the_first_change() {
+    let original = Server::start(|_| Reply {
+        status: 503,
+        body: Vec::new(),
+        location: None,
+    });
+    let replacement = Server::start(acknowledged);
+    let dir = tempfile::tempdir().unwrap();
+    let id = "0123456789abcdef0123456789abcdef";
+    // Both files use the released format, before approvals carried a destination.
+    fs::write(
+        dir.path().join("settings.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "server_url": original.url, "auto_submit": true,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join(format!("{id}.json")),
+        serde_json::to_vec(&serde_json::json!({
+            "id": id, "created_ms": 1, "version": "0.1", "os": "test", "arch": "test",
+            "stack": "old stack", "status": "Queued",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let store = CrashStore::open(dir.path().into()).unwrap();
+    let mut settings = store.settings().unwrap();
+    // Switching off automatic sharing preserves the previously queued approval for A.
+    settings.auto_submit = false;
+    store.save_settings(&settings).unwrap();
+    assert_eq!(status(&store, id), ReportStatus::Queued);
+    assert_eq!(complete(&store, trusted()).failed, 1);
+    assert_eq!(original.count(), 1);
+    for url in [&replacement.url, &original.url] {
+        settings.server_url.clone_from(url);
+        store.save_settings(&settings).unwrap();
+        let restarted = CrashStore::open(dir.path().into()).unwrap();
+        assert_eq!(status(&restarted, id), ReportStatus::NeedsConsent);
+        assert_eq!(complete(&restarted, trusted()).submitted, 0);
+    }
+    assert_eq!(replacement.count(), 0);
+    assert_eq!(original.count(), 1);
+}
+
+#[test]
+fn late_ack_cannot_consume_a_new_approval_even_at_the_same_destination() {
+    enum Change {
+        KeepLocal,
+        SwitchServer,
+        SwitchBack,
+    }
+    for change in [Change::KeepLocal, Change::SwitchServer, Change::SwitchBack] {
+        let (entered, received) = mpsc::sync_channel(1);
+        let (release, gate) = mpsc::sync_channel(1);
+        let first = AtomicBool::new(true);
+        let original = Server::start(move |request| {
+            if first.swap(false, Ordering::AcqRel) {
+                let _ = entered.send(());
+                let _ = gate.recv_timeout(Duration::from_secs(15));
+            }
+            acknowledged(request)
+        });
+        // On an assertion failure, dropping this sender also releases the server.
+        let allow_ack = release;
+        let replacement = Server::start(acknowledged);
+        let (_temp, store) = store(&original, false);
+        let report = store.insert("frame").unwrap();
+        store.queue_report(&report.id).unwrap();
+        let task = spawn_with(store.clone(), trusted()).unwrap();
+        received.recv_timeout(Duration::from_secs(15)).unwrap();
+
+        match change {
+            Change::KeepLocal => {
+                assert!(store.keep_local(&report.id).unwrap());
+            }
+            Change::SwitchServer | Change::SwitchBack => {
+                let mut settings = store.settings().unwrap();
+                settings.server_url.clone_from(&replacement.url);
+                store.save_settings(&settings).unwrap();
+                if matches!(change, Change::SwitchBack) {
+                    settings.server_url.clone_from(&original.url);
+                    store.save_settings(&settings).unwrap();
+                }
+                assert_eq!(status(&store, &report.id), ReportStatus::NeedsConsent);
+            }
+        }
+        assert!(store.queue_report(&report.id).unwrap());
+        allow_ack.send(()).unwrap();
+        let stale = task
+            .result
+            .recv_timeout(Duration::from_secs(15))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stale.skipped, 1);
+        assert_eq!(stale.submitted, 0);
+        assert_eq!(status(&store, &report.id), ReportStatus::Queued);
+        assert_eq!(complete(&store, trusted()).submitted, 1);
+        let counts = if matches!(change, Change::SwitchServer) {
+            (1, 1)
+        } else {
+            (2, 0)
+        };
+        assert_eq!((original.count(), replacement.count()), counts);
+        assert_eq!(status(&store, &report.id), ReportStatus::Submitted);
+    }
+}
+
+#[test]
 fn non_success_redirect_and_invalid_ack_never_mark_submitted() {
     for case in 0..8 {
         let server = Server::start(move |request| {
@@ -367,7 +557,6 @@ fn tls_rejects_untrusted_ca_and_wrong_hostname() {
         let server = Server::start(acknowledged);
         let (_temp, store) = store(&server, false);
         let report = store.insert("frame").unwrap();
-        store.queue_report(&report.id).unwrap();
         let builder = if wrong_host {
             let mut settings = store.settings().unwrap();
             settings.server_url = server.url.replace("localhost", "127.0.0.1");
@@ -376,6 +565,7 @@ fn tls_rejects_untrusted_ca_and_wrong_hostname() {
         } else {
             client_builder().no_proxy()
         };
+        store.queue_report(&report.id).unwrap();
         assert_eq!(complete(&store, builder).failed, 1);
         assert_eq!(status(&store, &report.id), ReportStatus::Queued);
         assert_eq!(server.count(), 0);
@@ -447,7 +637,8 @@ fn exclusive_upload_lock_and_cancel_before_send_preserve_queue() {
             &trusted().build().unwrap(),
             &endpoint(&server.url).unwrap(),
             &report,
-            &cancel
+            &cancel,
+            || Ok(true)
         )
         .unwrap_err()
         .kind(),

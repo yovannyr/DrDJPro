@@ -1,7 +1,7 @@
 //! Bounded textual upload on a control worker. Never called by an audio callback
 //! or panic/signal hook. Binary dumps remain local: text consent is not dump consent.
 use super::runtime_log::{emit, Event};
-use super::{privacy::sanitize_stack, CrashReport, CrashStore, ReportStatus};
+use super::{privacy::sanitize_stack, CrashReport, CrashStore};
 use flate2::{write::GzEncoder, Compression};
 use reqwest::blocking::{Client, ClientBuilder};
 use serde::{Deserialize, Serialize};
@@ -111,8 +111,7 @@ fn run_queue(
     if cancel.load(Ordering::Acquire) {
         return Ok(UploadSummary::default());
     }
-    let settings = store.settings()?;
-    let endpoint = endpoint(&settings.server_url)?;
+    let destination = store.upload_destination()?;
     let client = builder
         .build()
         .map_err(|_| invalid("Cannot initialize crash HTTPS client"))?;
@@ -124,32 +123,20 @@ fn run_queue(
         if cancel.load(Ordering::Acquire) {
             break;
         }
-        // Do not send later requests to a destination whose settings changed while
-        // this pass was active. No store lock is held across HTTPS.
-        let current = store.settings()?;
-        if current.server_url != settings.server_url {
-            break;
-        }
-        if report.status == ReportStatus::Pending && current.auto_submit {
-            store.transition_status(&report.id, ReportStatus::Pending, ReportStatus::Queued)?;
-        }
-        let Some(report) = store.queued_report(&report.id)? else {
+        // Claim and acknowledge against this pass's destination under the store
+        // lock. No lock is held across HTTPS, and a pass never changes its URL.
+        let Some(report) = store.prepare_upload(&report.id, &destination)? else {
             summary.skipped += 1;
             continue;
         };
-        match upload(&client, &endpoint, &report, cancel) {
-            Ok(()) => {
-                if store.transition_status(
-                    &report.id,
-                    ReportStatus::Queued,
-                    ReportStatus::Submitted,
-                )? {
-                    summary.submitted += 1;
-                    emit(Event::UploadAcknowledged, Some(&report.id), None);
-                } else {
-                    summary.skipped += 1;
-                }
+        match upload(&client, &destination.url, &report, cancel, || {
+            store.may_send(&report, &destination)
+        }) {
+            Ok(true) if store.acknowledge(&report, &destination)? => {
+                summary.submitted += 1;
+                emit(Event::UploadAcknowledged, Some(&report.id), None);
             }
+            Ok(_) => summary.skipped += 1,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => break,
             Err(error) => {
                 summary.failed += 1;
@@ -190,7 +177,8 @@ fn upload(
     endpoint: &url::Url,
     report: &CrashReport,
     cancel: &AtomicBool,
-) -> io::Result<()> {
+    may_send: impl FnOnce() -> io::Result<bool>,
+) -> io::Result<bool> {
     let payload = TextReport {
         build: report.build.as_ref(),
         schema_version: 1,
@@ -206,6 +194,9 @@ fn upload(
     let mut gzip = GzEncoder::new(Vec::new(), Compression::fast());
     serde_json::to_writer(&mut gzip, &payload).map_err(io::Error::other)?;
     let body = gzip.finish()?;
+    if !may_send()? {
+        return Ok(false);
+    }
     if cancel.load(Ordering::Acquire) {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
@@ -243,7 +234,7 @@ fn upload(
     if ack.id != report.id || !ack.accepted {
         return Err(invalid("Mismatched or rejected crash acknowledgement"));
     }
-    Ok(())
+    Ok(true)
 }
 
 fn invalid(message: &str) -> io::Error {

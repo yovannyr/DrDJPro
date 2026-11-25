@@ -56,7 +56,7 @@ export component CrashReportsWindow inherits Window {
                 TouchArea {enabled:root.available&&!root.busy;clicked=>{auto-sharing.focus();root.automatic=!root.automatic;}}
             }
         }
-        Text {text:"Queued reports retain their prior consent even with auto-sharing off. KEEP LOCAL revokes future attempts. A request already started cannot be recalled.";color:#bbbbbb;wrap:word-wrap;}
+        Text {text:"Queued reports can retry at the same destination with auto-sharing off. After a destination change, choose SEND TEXT again. KEEP LOCAL stops future attempts.";color:#bbbbbb;wrap:word-wrap;}
         if root.settings-notice!="":Text {text:root.settings-notice;color:#ffcc88;wrap:word-wrap;accessible-label:"Crash sharing settings notice";}
         HorizontalLayout {
             Button {text:"SAVE SETTINGS";enabled:root.available&&!root.busy;clicked=>{root.save-settings();}}

@@ -38,6 +38,7 @@ As a developer, I want to receive crash reports with stack traces so that I can 
 2. **Given** a crash report is created, **When** report includes annotations, **Then** application version and OS information are included
 3. **Given** a crash report is ready, **When** user submits it, **Then** the report is sent asynchronously without blocking UI
 4. **Given** the upload server is unavailable, **When** crash report submission fails, **Then** the report is queued for retry
+5. **Given** a report is queued, **When** the saved HTTPS destination changes, **Then** the report requires explicit approval for the new destination, including after restart and with automatic sharing enabled. Returning to an earlier destination also requires fresh approval.
 
 ---
 
@@ -94,7 +95,7 @@ As an application, I want a dedicated crash-handler process that monitors the ma
 - **FR-004**: System MUST store crash reports in `~/.local/share/DRDJPro-Rust/crashes/` (Linux/macOS) or `%APPDATA%\DRDJPro-Rust\crashes\` (Windows)
 - **FR-005**: System MUST allow users to opt in or opt out of automatic crash-report submission
 - **FR-006**: System MUST support manual crash-report submission from a crash-report manager UI
-- **FR-007**: System MUST queue crash reports when the server is unavailable and retry on next startup
+- **FR-007**: System MUST queue crash reports when the server is unavailable and retry on next startup at the approved destination. A change of destination MUST invalidate existing queued approvals. A response from a previous approval MUST NOT confirm delivery under a new approval.
 - **FR-008**: System MUST send crash reports asynchronously without blocking the application
 - **FR-009**: System MUST support a dedicated crash-handler process that monitors the main application
 - **FR-010**: System MUST capture unhandled Rust panics and native segmentation faults

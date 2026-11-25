@@ -167,9 +167,21 @@ einschließlich späterer Wiederholungen. Der persistente Zustand `Queued` ist
 selbst die Warteschlange; es entstehen keine zweiten Queue-/Archivdateien.
 `Pending` wird nur mit gespeicherter `auto_submit=true` autorisiert; `Declined`
 bleibt auch dann lokal, bis erneute explizite Zustimmung erteilt wird.
-`Submitted` wird nicht erneut eingereiht. Schon autorisierte `Queued`-Berichte
-dürfen unabhängig von der Einstellung für *zukünftige* Reports wiederholt werden.
-Für Widerruf vor einem weiteren Versuch den Zustand auf `Declined` setzen.
+`Submitted` wird nicht erneut eingereiht. Am selben HTTPS-Ziel dürfen
+`Queued`-Berichte auch nach dem Abschalten von Auto-Sharing wiederholt werden.
+Beim Wechsel oder Entfernen des gespeicherten Ziels brauchen wartende Berichte
+eine neue Einzelfreigabe (`NeedsConsent`). Das gilt auch nach einem Neustart,
+bei aktivem Auto-Sharing und bei Rückkehr zur früheren Adresse. Im Berichtsfenster
+das gespeicherte Ziel prüfen und für den gewünschten Bericht **SEND TEXT** wählen.
+**KEEP LOCAL** widerruft weitere Versuche. Eine bereits laufende Übertragung
+kann den bisherigen Server noch erreichen. Ihre Antwort bestätigt keine spätere Freigabe.
+
+Der Store wechselt beim Speichern einer anderen HTTPS-Adresse die Zielkennung
+in einem atomaren Schreibvorgang. Beim Lesen erscheint ein zuvor eingereihter
+Bericht dann als `NeedsConsent`. Eine Freigabe gilt für genau einen Bericht
+und eine Zielkennung. Beides wird vor der Übertragung und bei der Bestätigung
+geprüft. Wartende Berichte im alten Dateiformat dürfen am bisherigen Ziel
+weiter wiederholt werden, bis erstmals ein anderes Ziel gespeichert wird.
 
 `spawn_upload_queue(store)` startet einen einzelnen Hintergrunddurchlauf und
 liefert ein nicht blockierend abfragbares `UploadTask`. Der Aufrufer bewahrt den
