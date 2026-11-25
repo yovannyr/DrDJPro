@@ -54,6 +54,33 @@ fn rotation_caps_managed_data_and_preserves_unknown_files() {
 }
 
 #[test]
+fn waiting_writer_acquires_released_log_lock_without_polling() {
+    use std::sync::mpsc::{self, RecvTimeoutError};
+
+    let (_temp, root) = root();
+    let holder = sink::Sink::open(&root, 1024).unwrap();
+    let (starting, started) = mpsc::channel();
+    let (finished, result) = mpsc::channel();
+    let waiter = thread::spawn(move || {
+        starting.send(()).unwrap();
+        let opened = sink::Sink::open(&root, 1024).map(drop);
+        finished.send(opened).unwrap();
+    });
+    started.recv_timeout(Duration::from_secs(3)).unwrap();
+    let while_held = result.recv_timeout(Duration::from_millis(100));
+    drop(holder);
+    assert!(
+        matches!(while_held, Err(RecvTimeoutError::Timeout)),
+        "Writer must wait for the lock, got {while_held:?}"
+    );
+    result
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap()
+        .unwrap();
+    waiter.join().unwrap();
+}
+
+#[test]
 fn producer_is_allocation_free_and_overflow_is_observable_after_recovery() {
     let (_temp, root) = root();
     let lock = sink::Sink::open(&root, 1024).unwrap();

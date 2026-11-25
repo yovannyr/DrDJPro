@@ -406,7 +406,7 @@ JSONL enthält nur Schema, Zeit, PID, Rolle, Ereignis, optional validierte
 Panic-Texte oder Stacks werden übernommen; Logs werden nicht hochgeladen.
 
 Eine feste Queue mit 256 Einträgen übergibt ohne Producer-Allokation oder
-Dateizugriff an einen Writer (256-KiB-Stack, 64er-Batches, 100-ms-Poll).
+Dateizugriff an einen Writer (256-KiB-Stack, 64er-Batches, 100-ms-Poll im Leerlauf).
 Die Queue ist lock-free, nicht garantiert wait-free. Native Signal-/Exception-
 und Audio-Callbacks verwenden sie nicht. Dateiarbeit, Synchronisierung und
 Windows-Retries erfolgen ausschließlich im Writer. Windows-Sperren erhalten
@@ -418,6 +418,9 @@ außerhalb dieser Zeitgrenze.
 auf 65.536 Bytes begrenzt: 192 KiB dauerhaft, maximal 256 KiB verwaltete
 logische Logdaten einschließlich einer Staging-Datei. `runtime.lock` ist leer.
 Dateisystem-Blöcke/Metadaten und fremde Dateien zählen nicht zu dieser Grenze.
+Bei konkurrierenden Prozessen wartet der Writer auf die Freigabe der
+Dateisperre durch das Betriebssystem. Ein Flush-Aufrufer behält seine eigene
+Frist, auch wenn der andere Prozess die Sperre länger hält.
 Die prozessübergreifende Sperre liegt vor Recovery, Staging und Rotation;
 atomarer Austausch verhindert Anhängen in externe Hardlinks. Symlinks/Reparse-
 Punkte werden abgewiesen. Unix: Verzeichnis 0700, JSONL-/Stagingdateien 0600; Windows nutzt
