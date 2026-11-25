@@ -53,6 +53,14 @@ pub fn wav_samples(samples: &[i16], rate: u32, channels: u16) -> TempFile {
 }
 
 pub fn tagged_mp3(title: &str, artist: &str, album: &str) -> TempFile {
+    mp3_with_text_frames(&[(b"TIT2", title), (b"TPE1", artist), (b"TALB", album)])
+}
+
+pub fn tagged_diagnostic_mp3(bpm: &str, key: &str) -> TempFile {
+    mp3_with_text_frames(&[(b"TBPM", bpm), (b"TKEY", key)])
+}
+
+fn mp3_with_text_frames(frames: &[(&[u8; 4], &str)]) -> TempFile {
     fn size(value: usize) -> [u8; 4] {
         [
             (value >> 21 & 127) as u8,
@@ -62,7 +70,7 @@ pub fn tagged_mp3(title: &str, artist: &str, album: &str) -> TempFile {
         ]
     }
     let mut tags = Vec::new();
-    for (key, value) in [(b"TIT2", title), (b"TPE1", artist), (b"TALB", album)] {
+    for &(key, value) in frames {
         let mut payload = vec![3];
         payload.extend_from_slice(value.as_bytes());
         tags.extend_from_slice(key);

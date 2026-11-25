@@ -5,7 +5,7 @@ use std::{cell::Cell, rc::Rc};
 
 use drdjpro_ui_spike::*;
 
-fn click(ui: &AppWindow, label: &str) {
+fn click(ui: &impl i_slint_backend_testing::ElementRoot, label: &str) {
     let controls: Vec<_> = ElementHandle::find_by_accessible_label(ui, label)
         .filter(|item| {
             item.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button)
@@ -13,6 +13,1135 @@ fn click(ui: &AppWindow, label: &str) {
         .collect();
     assert_eq!(controls.len(), 1, "unique action: {label}");
     controls[0].invoke_accessible_default_action();
+}
+
+#[test]
+fn preparation_tools_are_reachable_in_both_layouts() {
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_modern_library_open(true);
+        ui.set_library_tab(4);
+        ui.set_selected_track(17);
+        let invoked = Rc::new(Cell::new(""));
+        let cue = invoked.clone();
+        ui.on_open_cue_trim(move || cue.set("cue trim"));
+        let planning = invoked.clone();
+        ui.on_open_set_planning(move || planning.set("planning"));
+        ui.show().unwrap();
+        click(&ui, "Fine-tune a hot cue");
+        assert_eq!(invoked.get(), "cue trim");
+        click(&ui, "Open set planning");
+        assert_eq!(invoked.get(), "planning");
+    }
+}
+
+#[test]
+fn planning_window_routes_each_action_to_its_editor() {
+    i_slint_backend_testing::init_no_event_loop();
+    let ui = SetPlanningWindow::new().unwrap();
+    let invoked = Rc::new(Cell::new(""));
+    macro_rules! action {
+        ($callback:ident, $label:literal) => {{
+            let invoked = invoked.clone();
+            ui.$callback(move || invoked.set($label));
+        }};
+    }
+    action!(on_open_hook_marks, "Wordplay");
+    action!(on_open_package, "Portable sets");
+    action!(on_open_passages, "Passages");
+    action!(on_open_project, "Timeline");
+    action!(on_open_midi_scene, "MIDI scene editor");
+    ui.show().unwrap();
+    for label in [
+        "Wordplay",
+        "Portable sets",
+        "Passages",
+        "Timeline",
+        "MIDI scene editor",
+    ] {
+        click(&ui, label);
+        assert_eq!(invoked.get(), label);
+    }
+}
+
+#[test]
+fn gig_planning_keeps_drafts_scoped_and_manual_loading_available_in_both_layouts() {
+    use slint::platform::{update_timers_and_animations, Key, WindowEvent};
+    use std::cell::RefCell;
+
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_audio_enabled(true);
+        ui.set_left_loaded(true);
+        ui.set_left_playing(true);
+        ui.set_selected_track(17);
+        ui.set_library_tab(4);
+        ui.set_gig_names(
+            Rc::new(slint::VecModel::from(vec![
+                "No active gig".into(),
+                "Gig A".into(),
+                "Gig B".into(),
+            ]))
+            .into(),
+        );
+        let avoid = GigRuleView {
+            track_id: 17,
+            status: "avoid".into(),
+            reason: "Client request".into(),
+            warning: "Gig A: avoid tonight".into(),
+            ..Default::default()
+        };
+        ui.set_gig_selection_index(1);
+        ui.set_gig_rule_view(avoid.clone());
+        let target = ui.as_weak();
+        let gig_a = avoid.clone();
+        ui.on_select_gig(move |index| {
+            let ui = target.unwrap();
+            ui.set_gig_selection_index(index);
+            ui.set_gig_rule_view(if index == 1 {
+                gig_a.clone()
+            } else {
+                GigRuleView {
+                    track_id: 17,
+                    ..Default::default()
+                }
+            });
+        });
+        let created = Rc::new(RefCell::new(String::new()));
+        let observed = created.clone();
+        ui.on_create_gig(move |name| *observed.borrow_mut() = name.to_string());
+        let saves = Rc::new(Cell::new(0));
+        let observed = saves.clone();
+        let target = ui.as_weak();
+        ui.on_save_gig_rule(move |track_id, status, reason| {
+            observed.set(observed.get() + 1);
+            target.unwrap().set_gig_rule_view(GigRuleView {
+                track_id,
+                status,
+                reason,
+                ..Default::default()
+            });
+        });
+        let played = Rc::new(Cell::new(false));
+        let observed = played.clone();
+        ui.on_toggle_left(move || observed.set(true));
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        let find = |label| ElementHandle::find_by_accessible_label(&ui, label).next();
+        let key = |key: Key| {
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: key.into() });
+            ui.window()
+                .dispatch_event(WindowEvent::KeyReleased { text: key.into() });
+            update_timers_and_animations();
+        };
+        let open = || {
+            click(&ui, "Open gig planning");
+            update_timers_and_animations();
+        };
+        let reason = || find("Gig rule reason").unwrap();
+        let summary = || {
+            find("Saved gig rule")
+                .unwrap()
+                .accessible_description()
+                .unwrap()
+        };
+        open();
+        assert_eq!(
+            reason().accessible_value().as_deref(),
+            Some("Client request")
+        );
+        find("New gig name")
+            .unwrap()
+            .set_accessible_value("Festival");
+        click(&ui, "Create gig");
+        assert_eq!(created.borrow().as_str(), "Festival");
+        reason().set_accessible_value("Uncommitted A");
+        key(Key::DownArrow);
+        assert_eq!(ui.get_gig_selection_index(), 2);
+        assert_eq!(reason().accessible_value().as_deref(), Some(""));
+        assert_eq!(
+            find("Save gig rule").unwrap().accessible_enabled(),
+            Some(false)
+        );
+
+        click(&ui, "Mark as Must play");
+        let long = "A long reason that stays readable. ".repeat(12);
+        reason().set_accessible_value(&long);
+        click(&ui, "Save gig rule");
+        update_timers_and_animations();
+        assert_eq!(ui.get_gig_rule_view().reason.as_str(), long);
+        assert_eq!(summary(), "Must play · pending");
+        ui.set_gig_rule_view(GigRuleView {
+            fulfilled: true,
+            ..ui.get_gig_rule_view()
+        });
+        assert_eq!(summary(), "Must play · fulfilled");
+        let transport = if mode == LayoutMode::Classic {
+            "DECK A play/pause"
+        } else {
+            "PAUSE"
+        };
+        let control = find(transport).unwrap();
+        assert!(
+            control.absolute_position().y + control.size().height <= reason().absolute_position().y
+        );
+        click(&ui, transport);
+        assert!(played.get());
+        click(&ui, "Clear gig rule");
+        update_timers_and_animations();
+        assert_eq!(summary(), "No saved rule");
+        click(&ui, "Mark as Request");
+        reason().set_accessible_value("Only for track 17");
+        ui.set_selected_track(18);
+        click(&ui, "Save gig rule");
+        assert_eq!(saves.get(), 2);
+        ui.set_gig_rule_view(GigRuleView {
+            track_id: 18,
+            ..Default::default()
+        });
+        update_timers_and_animations();
+        assert_eq!(reason().accessible_value().as_deref(), Some(""));
+        key(Key::Escape);
+        assert!(find("Gig planning").is_none());
+
+        ui.set_selected_track(17);
+        ui.set_gig_selection_index(1);
+        ui.set_gig_rule_view(avoid.clone());
+        ui.set_library_tab(0);
+        let warning = "Gig warning for selected track";
+        assert_eq!(
+            find(warning).unwrap().accessible_description(),
+            Some(avoid.warning)
+        );
+        assert_eq!(
+            find("Load selected into deck A")
+                .unwrap()
+                .accessible_enabled(),
+            Some(true)
+        );
+        ui.set_selected_track(18);
+        assert!(find(warning).is_none());
+        ui.set_library_tab(4);
+        open();
+        key(Key::UpArrow);
+        assert_eq!(ui.get_gig_selection_index(), 0);
+        assert_eq!(
+            find("Save gig rule").unwrap().accessible_enabled(),
+            Some(false)
+        );
+    }
+}
+
+#[test]
+fn metadata_diagnosis_reads_every_source_and_routes_only_current_octave_matches() {
+    use slint::platform::{Key, WindowEvent};
+    use std::cell::RefCell;
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_audio_enabled(true);
+        ui.set_view_mode(mode);
+        ui.set_library_tab(4);
+        ui.set_selected_track(17);
+        ui.set_left_loaded(true);
+        ui.set_left_playing(true);
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        let diagnosis = MetadataDiagnosisView {
+            open: true,
+            track_id: 17,
+            compare: true,
+            text: "BPM\nFile tag: 85\nLast analysis: missing\nCatalog: 170 (grid)\n\nKey\nFile tag: 8A\nLast analysis: unreadable\nCatalog: 9B (manual)\n\nCompare half and double tempo.".into(),
+        };
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let target = ui.as_weak();
+        let document = diagnosis.clone();
+        ui.on_open_metadata_diagnosis(move || {
+            target.unwrap().set_metadata_diagnosis(document.clone())
+        });
+        let logged = events.clone();
+        let target = ui.as_weak();
+        ui.on_close_metadata_diagnosis(move || {
+            logged.borrow_mut().push("close");
+            target.unwrap().set_metadata_diagnosis(Default::default());
+        });
+        let logged = events.clone();
+        ui.on_open_tempo_comparison(move || logged.borrow_mut().push("compare"));
+        let button = "Hear tempo interpretations from diagnosis";
+        let find = |label| ElementHandle::find_by_accessible_label(&ui, label).next();
+        click(&ui, "Open metadata diagnosis");
+        let content = find("Tag, analysis and catalog values").unwrap();
+        assert_eq!(content.accessible_read_only(), Some(true));
+        content.set_accessible_value("overwrite");
+        assert_eq!(content.accessible_value(), Some(diagnosis.text.clone()));
+        let play = if mode == LayoutMode::Classic {
+            "DECK A play/pause"
+        } else {
+            "PAUSE"
+        };
+        let transport = find(play).unwrap();
+        assert!(
+            transport.absolute_position().y + transport.size().height
+                <= content.absolute_position().y
+        );
+        let requested = Rc::new(Cell::new(false));
+        let observed = requested.clone();
+        ui.on_toggle_left(move || observed.set(true));
+        click(&ui, play);
+        assert!(requested.get());
+        click(&ui, button);
+        assert_eq!(&*events.borrow(), &["close", "compare"]);
+
+        click(&ui, "Open metadata diagnosis");
+        ui.set_metadata_diagnosis(MetadataDiagnosisView {
+            compare: false,
+            ..diagnosis.clone()
+        });
+        assert!(find(button).is_none());
+        for key in [Key::Tab, Key::Escape] {
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: key.into() });
+            ui.window()
+                .dispatch_event(WindowEvent::KeyReleased { text: key.into() });
+            assert_eq!(ui.get_metadata_diagnosis().open, key == Key::Tab);
+        }
+        click(&ui, "Open metadata diagnosis");
+        ui.set_selected_track(18);
+        assert!(find(button).is_none());
+        slint::platform::update_timers_and_animations();
+        assert!(!ui.get_metadata_diagnosis().open);
+        ui.set_selected_track(17);
+        click(&ui, "Open metadata diagnosis");
+        ui.set_library_tab(0);
+        slint::platform::update_timers_and_animations();
+        assert_eq!(
+            &*events.borrow(),
+            &["close", "compare", "close", "close", "close"]
+        );
+    }
+}
+
+#[test]
+fn import_review_pages_large_batches_and_keeps_transport_available() {
+    #[derive(Default)]
+    struct ImportRows {
+        reads: Cell<usize>,
+        skipped: Cell<Option<usize>>,
+        notify: slint::ModelNotify,
+    }
+    impl slint::Model for ImportRows {
+        type Data = ImportReviewRow;
+        fn row_count(&self) -> usize {
+            100_000
+        }
+        fn row_data(&self, index: usize) -> Option<ImportReviewRow> {
+            if index >= self.row_count() {
+                return None;
+            }
+            self.reads.set(self.reads.get() + 1);
+            let finding = match index {
+                0 => "Exact copy: identical bytes",
+                1 => "Possible edit: title and artist agree",
+                _ => "Unchecked: file changed while reading",
+            };
+            Some(ImportReviewRow {
+                index: index as i32,
+                selected: index < 99_999 && self.skipped.get() != Some(index),
+                eligible: index < 99_999,
+                path: format!("incoming/folder/track-{index}.mp3").into(),
+                matches: format!("{finding}\nexisting/collection/file-{index}.mp3").into(),
+            })
+        }
+        fn model_tracker(&self) -> &dyn slint::ModelTracker {
+            &self.notify
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_audio_enabled(true);
+        ui.set_left_loaded(true);
+        ui.set_left_playing(true);
+        ui.set_view_mode(mode);
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        let rows = Rc::new(ImportRows::default());
+        ui.set_import_review_rows(rows.clone().into());
+        ui.set_import_review_open(true);
+        ui.show().unwrap();
+        let control = |label| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .next()
+                .unwrap()
+        };
+        let text = || {
+            control("Import comparison details")
+                .accessible_value()
+                .unwrap()
+        };
+        let changed = rows.clone();
+        ui.on_toggle_import_review(move |index| {
+            let index = index as usize;
+            let keep = changed.skipped.get() == Some(index);
+            changed.skipped.set((!keep).then_some(index));
+            changed.notify.row_changed(index);
+        });
+        assert!(text().contains("incoming/folder/track-0.mp3"));
+        assert!(text().contains("Exact copy: identical bytes\nexisting/collection/file-0.mp3"));
+        click(&ui, "Keep incoming file");
+        assert_eq!(rows.skipped.get(), None);
+        click(&ui, "Skip incoming file");
+        click(&ui, "Skip incoming file");
+        assert_eq!(rows.skipped.get(), Some(0));
+        click(&ui, "Next import file");
+        assert!(text()
+            .contains("Possible edit: title and artist agree\nexisting/collection/file-1.mp3"));
+        click(&ui, "Previous import file");
+        assert_eq!(
+            control("Skip incoming file")
+                .accessible_description()
+                .as_deref(),
+            Some("Excluded from import")
+        );
+        control("Import file number").set_accessible_value("100000");
+        assert!(text().contains("incoming/folder/track-99999.mp3"));
+        assert!(text().contains("Unchecked: file changed while reading"));
+        assert_eq!(
+            control("Keep incoming file").accessible_enabled(),
+            Some(false)
+        );
+        click(&ui, "Previous import file");
+        assert_eq!(
+            control("Import file number").accessible_value().as_deref(),
+            Some("99999")
+        );
+        assert!(text().contains("incoming/folder/track-99998.mp3"));
+        let applied = Rc::new(Cell::new(0));
+        let observed = applied.clone();
+        ui.on_apply_import_review(move || observed.set(observed.get() + 1));
+        click(&ui, "Apply reviewed import");
+        let rescanned = Rc::new(Cell::new(false));
+        let observed = rescanned.clone();
+        ui.on_rescan_import_review(move || observed.set(true));
+        click(&ui, "Rescan import files");
+        assert!(rescanned.get());
+        ui.set_import_review_checking(true);
+        for label in [
+            "Apply reviewed import",
+            "Keep incoming file",
+            "Skip incoming file",
+            "Rescan import files",
+        ] {
+            assert_eq!(control(label).accessible_enabled(), Some(false));
+        }
+        click(&ui, "Apply reviewed import");
+        assert_eq!(applied.get(), 1);
+        let canceled = Rc::new(Cell::new(false));
+        let observed = canceled.clone();
+        ui.on_cancel_import_review(move || observed.set(true));
+        click(&ui, "Cancel reviewed import");
+        assert!(canceled.get());
+        let play = Rc::new(Cell::new(false));
+        let observed = play.clone();
+        ui.on_toggle_left(move || observed.set(true));
+        let transport_label = if mode == LayoutMode::Classic {
+            "DECK A play/pause"
+        } else {
+            "PAUSE"
+        };
+        let transport = control(transport_label);
+        let pane = control("Review library import");
+        assert!(
+            transport.absolute_position().y + transport.size().height <= pane.absolute_position().y
+        );
+        let cancel = control("Cancel reviewed import");
+        assert!(
+            cancel.absolute_position().y + cancel.size().height
+                <= pane.absolute_position().y + pane.size().height
+        );
+        click(&ui, transport_label);
+        assert!(play.get());
+        assert!(
+            rows.reads.get() < 100,
+            "only visited rows should be materialized"
+        );
+    }
+}
+
+#[test]
+fn cover_labels_show_confirmed_catalog_values_in_both_layouts() {
+    i_slint_backend_testing::init_no_event_loop();
+    let ui = AppWindow::new().unwrap();
+    ui.set_audio_enabled(true);
+    ui.window().set_size(slint::LogicalSize::new(850., 860.));
+    ui.set_table_columns(
+        Rc::new(slint::VecModel::from(vec![TableColumn {
+            id: 11,
+            title: "Cover".into(),
+            width: 36.,
+            visible: true,
+            ..Default::default()
+        }]))
+        .into(),
+    );
+    ui.set_table_width(36.);
+    let image = slint::Image::from_rgb8(slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(8, 4));
+    let rows = [
+        LibraryRow {
+            id: 1,
+            cover: image.clone(),
+            cover_key: "12B".into(),
+            cover_energy: "10".into(),
+            ..Default::default()
+        },
+        LibraryRow {
+            id: 2,
+            cover_key: "8A".into(),
+            ..Default::default()
+        },
+        LibraryRow {
+            id: 3,
+            key: "7B".into(),
+            ..Default::default()
+        },
+    ];
+    ui.set_library_rows(Rc::new(slint::VecModel::from(rows.to_vec())).into());
+    let toggle = ui.as_weak();
+    ui.on_toggle_cover_overlay(move || {
+        let ui = toggle.unwrap();
+        ui.set_cover_overlay_enabled(!ui.get_cover_overlay_enabled());
+    });
+    ui.show().unwrap();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        ui.set_view_mode(mode);
+        for selected in [1, 2] {
+            ui.set_selected_track(selected);
+            let labels = |id| {
+                ElementHandle::find_by_accessible_label(&ui, &format!("Track {id} cover labels"))
+                    .next()
+            };
+            let badge = labels(1).unwrap();
+            let desc = badge.accessible_description().unwrap();
+            assert!(desc.starts_with("Camelot 12B, energy 10"));
+            assert_eq!(desc.ends_with(", selected"), selected == 1);
+            let bounds = |element: &ElementHandle| {
+                let p = element.absolute_position();
+                let size = element.size();
+                assert!(size.width > 0. && size.height > 0., "{size:?}");
+                (p.x, p.y, p.x + size.width, p.y + size.height)
+            };
+            let contains = |outer: (f32, f32, f32, f32), inner: (f32, f32, f32, f32)| {
+                outer.0 <= inner.0 && outer.1 <= inner.1 && inner.2 <= outer.2 && inner.3 <= outer.3
+            };
+            let chips = badge
+                .query_descendants()
+                .match_type_name("CoverBadge")
+                .find_all();
+            assert_eq!(chips.len(), 2);
+            for chip in &chips {
+                let rect = bounds(chip);
+                let caption = chip
+                    .query_descendants()
+                    .match_type_name("Text")
+                    .find_first()
+                    .unwrap();
+                let ink = bounds(&caption);
+                assert!(
+                    contains(bounds(&badge), rect),
+                    "Cover chip outside cell: {rect:?}"
+                );
+                assert!(
+                    contains(rect, ink),
+                    "Caption {ink:?} must fit its chip {rect:?}"
+                );
+            }
+            let (first, second) = (bounds(&chips[0]), bounds(&chips[1]));
+            assert!(
+                first.2 <= second.0
+                    || second.2 <= first.0
+                    || first.3 <= second.1
+                    || second.3 <= first.1,
+                "Overlapping chips: {first:?}, {second:?}"
+            );
+            let second = labels(2).unwrap().accessible_description().unwrap();
+            assert!(second.starts_with("Camelot 8A, energy unknown"));
+            assert_eq!(second.ends_with(", selected"), selected == 2);
+            assert!(labels(3).is_none(), "unconfirmed estimated key");
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, "Track 2 cover placeholder")
+                    .next()
+                    .is_some()
+            );
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, "Track 1 cover placeholder")
+                    .next()
+                    .is_none()
+            );
+        }
+        let picture = || {
+            ElementHandle::find_by_accessible_label(&ui, "Track 1 cover art")
+                .next()
+                .unwrap()
+                .size()
+        };
+        let original = picture();
+        click(&ui, "Configure track columns");
+        let toggle = ElementHandle::find_by_accessible_label(&ui, "Show key and energy on covers")
+            .next()
+            .unwrap();
+        toggle.invoke_accessible_default_action();
+        assert!(!ui.get_cover_overlay_enabled());
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Track 1 cover labels")
+                .next()
+                .is_none()
+        );
+        assert_eq!(picture(), original);
+        assert_eq!(ui.get_selected_track(), 2);
+        toggle.invoke_accessible_default_action();
+        click(&ui, "Close track columns");
+    }
+}
+
+#[test]
+fn chord_pair_pins_independent_tracks_and_confirms_the_selected_source_interval() {
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_modern_library_open(true);
+        ui.set_library_tab(4);
+        ui.set_selected_track(17);
+        ui.set_library_rows(slint::ModelRc::from([
+            LibraryRow {
+                id: 29,
+                available: true,
+                name: "Second mix".into(),
+                ..Default::default()
+            },
+            LibraryRow {
+                id: 17,
+                available: true,
+                name: "First mix".into(),
+                ..Default::default()
+            },
+        ]));
+        let target = ui.as_weak();
+        ui.on_select_library(move |id| target.unwrap().set_selected_track(id));
+        let target = ui.as_weak();
+        ui.on_open_chord_pair(move || {
+            let ui = target.unwrap();
+            ui.set_chord_pair_open(true);
+            ui.set_chord_pair_a("First mix".into());
+        });
+        let target = ui.as_weak();
+        ui.on_close_chord_pair(move || target.unwrap().set_chord_pair_open(false));
+        let target = ui.as_weak();
+        ui.on_use_chord_track(move |side| {
+            let ui = target.unwrap();
+            assert_eq!((side, ui.get_selected_track()), (1, 29));
+            ui.set_chord_pair_b("Second mix".into());
+        });
+        let target = ui.as_weak();
+        ui.on_compare_chord_pair(move |settings| {
+            assert_eq!(settings.start_a.as_str(), "1.25");
+            assert_eq!(settings.offset_b.as_str(), "0.5");
+            assert_eq!(settings.pitch_b.as_str(), "2");
+            let ui = target.unwrap();
+            ui.set_chord_pair_rows(slint::ModelRc::from([
+                ChordPairRow {
+                    time: "0.0–0.5 s".into(),
+                    a: "D:min".into(),
+                    b: "—".into(),
+                },
+                ChordPairRow {
+                    time: "0.5–2.0 s".into(),
+                    a: "D:min".into(),
+                    b: "A:maj".into(),
+                },
+            ]));
+            ui.set_chord_pair_index(0);
+        });
+        let target = ui.as_weak();
+        ui.on_select_chord_row(move |row| target.unwrap().set_chord_pair_index(row));
+        let saves = Rc::new(Cell::new(0));
+        let counter = saves.clone();
+        let target = ui.as_weak();
+        ui.on_confirm_chord_event(move |side, chord| {
+            assert_eq!(
+                (target.unwrap().get_chord_pair_index(), side, chord.as_str()),
+                (1, 1, "Dm")
+            );
+            counter.set(counter.get() + 1);
+        });
+        let plays = Rc::new(Cell::new(0));
+        let counter = plays.clone();
+        ui.on_audition_chord_pair(move || counter.set(counter.get() + 1));
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        let control = |label| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .next()
+                .unwrap()
+        };
+        click(&ui, "Compare two chord passages");
+        click(&ui, "Choose library track for B");
+        slint::platform::update_timers_and_animations();
+        let candidate = control("Library track 29");
+        assert!(
+            candidate.size().height > 0.
+                && candidate.absolute_position().y + candidate.size().height <= 860.
+        );
+        candidate.invoke_accessible_default_action();
+        slint::platform::update_timers_and_animations();
+        assert!(ui.get_chord_pair_visible());
+        click(&ui, "Use selected track as B");
+        control("A passage start seconds").set_accessible_value("1.25");
+        control("B mix offset seconds").set_accessible_value("0.5");
+        control("B pitch semitones").set_accessible_value("2");
+        click(&ui, "Analyze both chord passages");
+        click(&ui, "Next chord interval");
+        control("Correct original source chord").set_accessible_value("Dm");
+        click(&ui, "Confirm B source chord");
+        assert_eq!(saves.get(), 1);
+        click(&ui, "Audition chord pair in headphones");
+        assert_eq!(plays.get(), 0);
+        ui.set_chord_pair_route(true);
+        click(&ui, "Audition chord pair in headphones");
+        assert_eq!(plays.get(), 1);
+        click(&ui, "Edit chord comparison timing");
+        assert_eq!(
+            control("A passage start seconds")
+                .accessible_value()
+                .as_deref(),
+            Some("1.25")
+        );
+        ui.set_library_tab(0);
+        slint::platform::update_timers_and_animations();
+        assert!(!ui.get_chord_pair_open());
+    }
+}
+
+#[test]
+fn local_keys_query_both_positions_and_close_on_selection_change() {
+    use slint::platform::WindowEvent;
+
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_modern_library_open(true);
+        ui.set_library_tab(4);
+        ui.set_selected_track(17);
+        let target = ui.as_weak();
+        ui.on_open_local_keys(move || {
+            let ui = target.unwrap();
+            ui.set_local_keys_track(17);
+            ui.set_local_keys_sections(slint::ModelRc::from([
+                "0–8 s · 8B".into(),
+                "8–16 s · 10B".into(),
+            ]));
+            ui.set_local_keys_open(true);
+        });
+        let target = ui.as_weak();
+        ui.on_close_local_keys(move || target.unwrap().set_local_keys_open(false));
+        let cues = Rc::new(Cell::new(0));
+        let observed = cues.clone();
+        ui.on_hold_hot_cue_left(move |_, _, _| observed.set(observed.get() + 1));
+        let target = ui.as_weak();
+        ui.on_select_local_key_times(move |start, end| {
+            assert_eq!((start.as_str(), end.as_str()), ("4.25", "12"));
+            let ui = target.unwrap();
+            ui.set_local_keys_entry("8B".into());
+            ui.set_local_keys_exit("10B".into());
+        });
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        click(&ui, "Inspect local key changes");
+        assert!(ui.get_local_keys_visible());
+        slint::platform::update_timers_and_animations();
+        assert!(ui.get_controller_search_focused());
+        ui.window()
+            .dispatch_event(WindowEvent::KeyPressed { text: "1".into() });
+        ui.window()
+            .dispatch_event(WindowEvent::KeyReleased { text: "1".into() });
+        assert_eq!(cues.get(), 0);
+        let control = |label| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .next()
+                .unwrap()
+        };
+        control("Entry time in seconds").set_accessible_value("4.25");
+        control("Exit time in seconds").set_accessible_value("12");
+        ui.set_local_keys_busy(true);
+        assert_eq!(
+            control("Find keys at entry and exit").accessible_enabled(),
+            Some(false)
+        );
+        ui.set_local_keys_busy(false);
+        click(&ui, "Find keys at entry and exit");
+        assert_eq!(
+            control("Key at entry").accessible_description().as_deref(),
+            Some("8B")
+        );
+        assert_eq!(
+            control("Key at exit").accessible_description().as_deref(),
+            Some("10B")
+        );
+        ui.set_selected_track(18);
+        assert!(!ui.get_local_keys_visible());
+        slint::platform::update_timers_and_animations();
+        assert!(!ui.get_local_keys_open());
+        assert!(!ui.get_controller_search_focused());
+    }
+}
+
+#[test]
+fn clipped_peak_inspection_exposes_matched_auditions_and_an_explicit_export() {
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_modern_library_open(true);
+        ui.set_library_tab(4);
+        ui.set_audio_enabled(true);
+        ui.set_selected_track(17);
+        let target = ui.as_weak();
+        ui.on_open_clip_check(move || {
+            let ui = target.unwrap();
+            ui.set_clip_check_track(17);
+            ui.set_clip_check_markers(slint::ModelRc::from(["2.0–3.5 s".into()]));
+            ui.set_clip_check_index(0);
+            ui.set_clip_check_open(true);
+        });
+        let target = ui.as_weak();
+        ui.on_close_clip_check(move || target.unwrap().set_clip_check_open(false));
+        let source = Rc::new(Cell::new(None));
+        let seen = source.clone();
+        ui.on_audition_clip_check(move |processed| seen.set(Some(processed)));
+        let writes = Rc::new(Cell::new(0));
+        let seen = writes.clone();
+        ui.on_export_clip_check(move || seen.set(seen.get() + 1));
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        click(&ui, "Find clipped peaks");
+        assert!(ui.get_clip_check_visible());
+        click(&ui, "Hear original passage");
+        assert_eq!(source.get(), None);
+        ui.set_clip_check_route(true);
+        click(&ui, "Hear original passage");
+        assert_eq!(source.get(), Some(false));
+        click(&ui, "Hear loudness-matched processed passage");
+        assert_eq!(source.get(), Some(true));
+        assert_eq!(writes.get(), 0);
+        click(&ui, "Export processed WAV copy");
+        assert_eq!(writes.get(), 1);
+        ui.set_selected_track(19);
+        assert!(!ui.get_clip_check_visible());
+        slint::platform::update_timers_and_animations();
+        assert!(!ui.get_clip_check_open());
+    }
+}
+
+#[test]
+fn sampler_browser_keeps_selection_separate_from_assignment_in_both_layouts() {
+    use slint::ModelRc;
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_audio_enabled(true);
+        ui.set_sampler_ready(true);
+        ui.set_sampler_slots(ModelRc::from([SamplerRow {
+            name: "Original kick".into(),
+            loaded: true,
+            ..Default::default()
+        }]));
+        ui.set_samp_preview_files(ModelRc::from(["Clap.wav".into(), "Ride.wav".into()]));
+        let target = ui.as_weak();
+        ui.on_open_sample_browser(move |slot| {
+            assert_eq!(slot, 0);
+            target.unwrap().set_samp_preview_open(true);
+        });
+        let target = ui.as_weak();
+        ui.on_select_sample_preview(move |index| target.unwrap().set_samp_preview_index(index));
+        let assigns = Rc::new(Cell::new(0));
+        let observed = assigns.clone();
+        ui.on_assign_sample_preview(move || observed.set(observed.get() + 1));
+        let target = ui.as_weak();
+        ui.on_close_sample_browser(move || target.unwrap().set_samp_preview_open(false));
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        click(&ui, "Show sampler");
+        slint::platform::update_timers_and_animations();
+        click(&ui, "Browse samples for slot 1");
+        let enabled = |label| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .next()
+                .unwrap()
+                .accessible_enabled()
+        };
+        assert_eq!(enabled("Assign selected sample to slot"), Some(false));
+        click(&ui, "Next sample");
+        assert_eq!(ui.get_samp_preview_index(), 0);
+        click(&ui, "Select sample Ride.wav");
+        assert_eq!(ui.get_samp_preview_index(), 1);
+        click(&ui, "Previous sample");
+        assert_eq!(ui.get_samp_preview_index(), 0);
+        assert_eq!(assigns.get(), 0);
+        assert_eq!(enabled("Assign selected sample to slot"), Some(true));
+        click(&ui, "Assign selected sample to slot");
+        assert_eq!(assigns.get(), 1);
+        click(&ui, "Close sample browser");
+        assert!(ui.get_sampler_open() && !ui.get_samp_preview_open());
+        click(&ui, "Browse samples for slot 1");
+        slint::platform::update_timers_and_animations();
+        click(&ui, "Show sampler");
+        slint::platform::update_timers_and_animations();
+        assert!(!ui.get_samp_preview_open());
+    }
+}
+
+#[test]
+fn reference_piano_uses_the_selected_passage_and_requires_headphones_in_both_layouts() {
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_audio_enabled(true);
+        ui.set_library_tab(4);
+        ui.set_selected_track(7);
+        ui.set_cover_label_editor(CoverLabelEditor {
+            open: true,
+            track_id: 7,
+            key: "8A".into(),
+            ..Default::default()
+        });
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        let action = Rc::new(Cell::new(None));
+        let received = action.clone();
+        ui.on_audition_reference(move |id, key, start, chord| {
+            assert_eq!((id, key.as_str(), start.as_str()), (7, "8A", "3.5"));
+            received.set(Some(chord));
+        });
+        let element = |name| {
+            ElementHandle::find_by_accessible_label(&ui, name)
+                .next()
+                .unwrap()
+        };
+        element("Passage start in seconds").set_accessible_value("3.5");
+        assert_eq!(
+            element("Audition reference root").accessible_enabled(),
+            Some(false)
+        );
+        click(&ui, "Audition reference chord");
+        assert_eq!(action.get(), None);
+        ui.set_reference_route(true);
+        click(&ui, "Audition reference root");
+        assert_eq!(action.get(), Some(false));
+        click(&ui, "Audition reference chord");
+        assert_eq!(action.get(), Some(true));
+        let stopped = Rc::new(Cell::new(false));
+        let received = stopped.clone();
+        ui.on_stop_reference(move || received.set(true));
+        ui.set_reference_active(true);
+        click(&ui, "Stop reference piano");
+        assert!(stopped.get());
+        let restored = Rc::new(Cell::new(0));
+        let received = restored.clone();
+        ui.on_reset_confirmed_key(move |id| received.set(id));
+        click(&ui, "Restore analyzed key");
+        assert_eq!(restored.get(), 7);
+    }
+}
+
+#[test]
+fn cover_label_editor_preserves_typed_values_and_cancels_on_track_change() {
+    i_slint_backend_testing::init_no_event_loop();
+    let ui = AppWindow::new().unwrap();
+    ui.set_audio_enabled(true);
+    ui.set_library_tab(4);
+    ui.set_selected_track(7);
+    ui.show().unwrap();
+    let target = ui.as_weak();
+    ui.on_open_cover_labels(move || {
+        target.unwrap().set_cover_label_editor(CoverLabelEditor {
+            open: true,
+            track_id: 7,
+            key: "8A".into(),
+            ..Default::default()
+        })
+    });
+    click(&ui, "Edit confirmed cover labels");
+    let control = |label| {
+        ElementHandle::find_by_accessible_label(&ui, label)
+            .next()
+            .unwrap()
+    };
+    control("Confirmed Camelot key").set_accessible_value("9B");
+    control("Confirmed energy").set_accessible_value("11");
+    let target = ui.as_weak();
+    ui.on_save_cover_labels(move |id, key, energy| {
+        assert_eq!((id, key.as_str(), energy.as_str()), (7, "9B", "11"));
+        target.unwrap().set_cover_label_editor(CoverLabelEditor {
+            open: true,
+            track_id: id,
+            key,
+            energy,
+            status: "Energy must be 1–10".into(),
+        });
+    });
+    click(&ui, "Save cover labels");
+    assert_eq!(
+        control("Cover label status")
+            .accessible_description()
+            .as_deref(),
+        Some("Energy must be 1–10")
+    );
+    assert_eq!(
+        control("Confirmed energy").accessible_value().as_deref(),
+        Some("11")
+    );
+    let target = ui.as_weak();
+    ui.on_cancel_cover_labels(move || target.unwrap().set_cover_label_editor(Default::default()));
+    ui.set_selected_track(8);
+    assert_eq!(
+        control("Save cover labels").accessible_enabled(),
+        Some(false)
+    );
+    slint::platform::update_timers_and_animations();
+    assert!(!ui.get_cover_label_editor().open);
+}
+
+#[test]
+fn prepare_tempo_comparison_exposes_variants_and_protects_the_grid_in_both_layouts() {
+    i_slint_backend_testing::init_no_event_loop();
+    for mode in [LayoutMode::Classic, LayoutMode::Modern] {
+        let ui = AppWindow::new().unwrap();
+        ui.set_view_mode(mode);
+        ui.set_library_tab(4);
+        ui.set_selected_track(1);
+        ui.set_audio_enabled(true);
+        ui.window().set_size(slint::LogicalSize::new(850., 860.));
+        ui.show().unwrap();
+        let opened = Rc::new(Cell::new(false));
+        let observed = opened.clone();
+        ui.on_open_tempo_comparison(move || observed.set(true));
+        click(&ui, "Compare half and double tempo");
+        assert!(opened.get());
+
+        let mut comparison = TempoComparisonView {
+            open: true,
+            track_id: 1,
+            slow_label: "85 BPM".into(),
+            fast_label: "170 BPM".into(),
+            can_toggle_lock: true,
+            locked: true,
+            status: "Grid locked".into(),
+            anchor_label: "Anchor 1.000 s".into(),
+            beats: Rc::new(slint::VecModel::from(vec![
+                BeatLine {
+                    downbeat: true,
+                    ..Default::default()
+                },
+                BeatLine {
+                    position: 0.5,
+                    ..Default::default()
+                },
+            ]))
+            .into(),
+            ..Default::default()
+        };
+        ui.set_tempo_comparison(comparison.clone());
+        let fast = Rc::new(Cell::new(None));
+        let observed = fast.clone();
+        ui.on_select_tempo_variant(move |value| observed.set(Some(value)));
+        click(&ui, "Faster tempo interpretation");
+        assert_eq!(fast.get(), Some(true));
+        click(&ui, "Slower tempo interpretation");
+        assert_eq!(fast.get(), Some(false));
+        let apply_count = Rc::new(Cell::new(0));
+        let observed = apply_count.clone();
+        ui.on_apply_tempo_comparison(move || observed.set(observed.get() + 1));
+        click(&ui, "Apply tempo interpretation");
+        assert_eq!(apply_count.get(), 0);
+        let lock = Rc::new(Cell::new(false));
+        let observed = lock.clone();
+        ui.on_toggle_tempo_grid_lock(move || observed.set(true));
+        click(&ui, "Toggle tempo grid lock");
+        assert!(lock.get());
+
+        comparison.locked = false;
+        comparison.can_apply = true;
+        comparison.fast_label = "".into();
+        ui.set_tempo_comparison(comparison);
+        click(&ui, "Faster tempo interpretation");
+        assert_eq!(fast.get(), Some(false));
+        click(&ui, "Apply tempo interpretation");
+        assert_eq!(apply_count.get(), 1);
+        let beats = ElementHandle::find_by_accessible_label(&ui, "Tempo comparison beat marks")
+            .next()
+            .unwrap();
+        assert_eq!(
+            beats.accessible_description().as_deref(),
+            Some("Anchor 1.000 s")
+        );
+        let mut marks = beats
+            .query_descendants()
+            .match_type_name("Rectangle")
+            .find_all();
+        marks.sort_by(|a, b| a.absolute_position().x.total_cmp(&b.absolute_position().x));
+        assert_eq!(marks.len(), 2);
+        assert!(marks[0].size().height > marks[1].size().height);
+        assert!((marks[0].absolute_position().x - beats.absolute_position().x).abs() < 1.);
+        let middle = beats.absolute_position().x + beats.size().width * 0.5;
+        assert!((marks[1].absolute_position().x - middle).abs() <= 1.);
+    }
+}
+
+#[test]
+fn prepare_tempo_comparison_cancels_when_the_user_leaves_the_preview() {
+    i_slint_backend_testing::init_no_event_loop();
+    let ui = AppWindow::new().unwrap();
+    ui.set_audio_enabled(true);
+    ui.set_view_mode(LayoutMode::Modern);
+    ui.show().unwrap();
+    let cancellations = Rc::new(Cell::new(0));
+    let observed = cancellations.clone();
+    let weak = ui.as_weak();
+    ui.on_cancel_tempo_comparison(move || {
+        observed.set(observed.get() + 1);
+        weak.unwrap().set_tempo_comparison(Default::default());
+    });
+    for exit in 0..5 {
+        ui.set_library_tab(4);
+        ui.set_selected_track(1);
+        ui.set_modern_library_open(true);
+        slint::platform::update_timers_and_animations();
+        ui.set_tempo_comparison(TempoComparisonView {
+            open: true,
+            track_id: 1,
+            ..Default::default()
+        });
+        match exit {
+            0 => click(&ui, "Cancel tempo comparison"),
+            1 => ui.set_library_tab(0),
+            2 => ui.set_modern_library_open(false),
+            3 => ui.set_selected_track(2),
+            _ => click(&ui, "Open settings"),
+        }
+        slint::platform::update_timers_and_animations();
+        assert_eq!(cancellations.get(), exit + 1);
+        assert!(!ui.get_tempo_comparison().open);
+    }
 }
 
 #[test]

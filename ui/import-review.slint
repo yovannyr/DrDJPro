@@ -1,0 +1,89 @@
+import { SpinBox, TextEdit } from "std-widgets.slint";
+import { LibraryButton } from "controls.slint";
+
+export struct ImportReviewRow { index: int, selected: bool, eligible: bool, path: string, matches: string }
+
+export component ImportReviewPanel inherits Rectangle {
+    in property <bool> active;
+    in property <bool> checking;
+    in property <[ImportReviewRow]> rows;
+    in property <string> status;
+    out property <bool> text-focused: root.active && (chooser.has-focus || details.has-focus);
+    callback toggle-file(int);
+    callback apply-review();
+    callback cancel-review();
+    callback rescan();
+    private property <int> page: 1;
+    private property <int> item-count: root.rows.length;
+    private property <int> current-page: max(1, min(root.page, root.rows.length));
+    private property <ImportReviewRow> current: root.active && root.rows.length > 0
+        ? root.rows[root.current-page - 1] : { index: -1, selected: false, eligible: false, path: "", matches: "" };
+    changed active => { if !root.active { root.page = 1; } }
+    changed item-count => { root.page = root.current-page; }
+    changed current-page => { details.content-y = 0px; details.content-x = 0px; }
+    visible: root.active;
+    background: #171a1f;
+    accessible-role: groupbox; accessible-label: "Review library import";
+
+    VerticalLayout {
+        padding: 3px; spacing: 2px;
+        HorizontalLayout {
+            spacing: 4px;
+            Text { text: "Review import"; color: #fff; font-weight: 600; vertical-alignment: center; }
+            LibraryButton {
+                text: "Previous"; accessible-label: "Previous import file";
+                enabled: root.current-page > 1;
+                clicked => { root.page = root.current-page - 1; }
+            }
+            chooser := SpinBox {
+                width: 130px; minimum: 1; maximum: max(1, root.rows.length);
+                value <=> root.page; enabled: root.rows.length > 1;
+                accessible-label: "Import file number";
+            }
+            Text { text: "of " + root.rows.length; color: #ddd; vertical-alignment: center; }
+            LibraryButton {
+                text: "Next"; accessible-label: "Next import file"; enabled: root.current-page < root.rows.length;
+                clicked => { root.page = root.current-page + 1; }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        details := TextEdit {
+            text: root.current.index < 0 ? "" : "Incoming file\n" + root.current.path + "\n\n" + root.current.matches;
+            read-only: true; wrap: word-wrap; font-size: 12px; min-height: 26px; vertical-stretch: 1;
+            accessible-label: "Import comparison details";
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            LibraryButton {
+                text: "Keep"; accessible-label: "Keep incoming file";
+                active: root.current.index >= 0 && root.current.selected;
+                enabled: root.current.index >= 0 && root.current.eligible && !root.checking;
+                accessible-description: !root.current.eligible ? "Rescan once this file is accessible"
+                    : self.active ? "Selected for import" : "Include this file";
+                clicked => { if !root.current.selected { root.toggle-file(root.current.index); } }
+            }
+            LibraryButton {
+                text: "Skip"; accessible-label: "Skip incoming file";
+                active: root.current.index >= 0 && !root.current.selected;
+                enabled: root.current.index >= 0 && !root.checking;
+                accessible-description: self.active ? "Excluded from import" : "Exclude this file";
+                clicked => { if root.current.selected { root.toggle-file(root.current.index); } }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            LibraryButton {
+                text: "Rescan"; accessible-label: "Rescan import files"; enabled: !root.checking;
+                clicked => { root.rescan(); }
+            }
+            LibraryButton {
+                text: "Apply import"; accessible-label: "Apply reviewed import";
+                enabled: root.rows.length > 0 && !root.checking;
+                clicked => { root.apply-review(); }
+            }
+            LibraryButton { text: "Cancel"; accessible-label: "Cancel reviewed import"; clicked => { root.cancel-review(); } }
+        }
+        if root.status != "" : Text {
+            text: root.status; color: #ddd; font-size: 11px; wrap: word-wrap;
+            accessible-role: text; accessible-label: "Import review status"; accessible-description: root.status;
+        }
+    }
+}

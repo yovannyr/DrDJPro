@@ -1,0 +1,44 @@
+import { ComboBox } from "std-widgets.slint";
+import { LibraryButton } from "controls.slint";
+import { DjTheme } from "theme.slint";
+
+export component ClipCheckPanel inherits Rectangle {
+    in property <[string]> markers;
+    in property <int> index: -1;
+    in property <string> status;
+    in property <bool> headphones;
+    in property <bool> busy;
+    callback select-marker(int);
+    callback audition(bool);
+    callback stop();
+    callback export-copy();
+    callback close();
+    private property <bool> has-marker: root.index >= 0 && root.index < root.markers.length;
+    accessible-role: groupbox; accessible-label: "Clipped peak inspection";
+    background: DjTheme.panel-dark;
+    min-height: 86px; preferred-height: 96px; max-height: 116px;
+    VerticalLayout {
+        padding: 4px; spacing: 3px;
+        HorizontalLayout {
+            spacing: 5px;
+            Text { text: "Suspected clipping"; color: DjTheme.text-primary; vertical-alignment: center; }
+            marker := ComboBox {
+                model: root.markers; current-index: root.index;
+                accessible-label: "Suspected clipping passages";
+                enabled: root.markers.length > 0 && !root.busy;
+                selected => { root.select-marker(self.current-index); }
+            }
+            LibraryButton { text: "Close"; accessible-label: "Close clipped peak inspection"; clicked => { root.close(); } }
+        }
+        HorizontalLayout {
+            spacing: 5px;
+            LibraryButton { text: "Original"; accessible-label: "Hear original passage"; enabled: root.has-marker && root.headphones && !root.busy; clicked => { root.audition(false); } }
+            LibraryButton { text: "Processed"; accessible-label: "Hear loudness-matched processed passage"; enabled: root.has-marker && root.headphones && !root.busy; clicked => { root.audition(true); } }
+            LibraryButton { text: "Stop"; accessible-label: "Stop clipping audition"; enabled: root.has-marker && root.headphones; clicked => { root.stop(); } }
+            LibraryButton { text: "Export WAV copy"; accessible-label: "Export processed WAV copy"; enabled: root.has-marker && !root.busy; clicked => { root.export-copy(); } }
+            if !root.headphones : Text { text: "PFL needs separate headphones (3/4)"; color: DjTheme.text-secondary; font-size: 11px; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        Text { text: root.status; color: DjTheme.text-secondary; wrap: word-wrap; accessible-role: text; accessible-label: "Clip inspection status"; accessible-description: self.text; }
+    }
+}

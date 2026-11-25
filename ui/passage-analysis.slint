@@ -1,0 +1,47 @@
+import {Button, LineEdit,ComboBox} from "std-widgets.slint";
+import {DjTheme} from "theme.slint";
+export component PassageWindow inherits Window{
+    title:"Passage comparison";preferred-width:690px;preferred-height:490px;min-width:535px;min-height:410px;background:DjTheme.app-bg;
+    in property<string> title-a;in property<string> title-b;
+    in-out property<string> start-a:"0";in-out property<string> start-b:"0";in-out property<string> length:"8";
+    in property<string> mix; in property<string> drums;in property<string> status;
+    callback pin(bool);callback settings-changed();callback measure();callback dismiss();
+    in-out property<string> tempo-a:"1";in-out property<string> tempo-b:"1";in-out property<string> offset-b:"0";
+    in property<[string]> overlaps;in property<int> overlap-index:-1;in property<bool> vocal-route;in property<string> vocal-status;
+    callback scan-vocals();callback select-overlap(int);callback hear-overlap();callback stop-overlap();
+    changed tempo-a=>{root.settings-changed();} changed tempo-b=>{root.settings-changed();} changed offset-b=>{root.settings-changed();}
+    changed start-a=>{root.settings-changed();} changed start-b=>{root.settings-changed();} changed length=>{root.settings-changed();}
+    VerticalLayout{
+        padding:12px;spacing:8px;
+        for name[i] in ["A","B"]:HorizontalLayout{spacing:6px;
+            Button{text:"Use selected as "+name; clicked=>{root.pin(i==1);}}
+            Text{text:i==0?root.title-a:root.title-b;color:DjTheme.text-primary;horizontal-stretch:1;overflow:elide;vertical-alignment:center;}
+            Text{text:"Start (s)";color:DjTheme.text-secondary;vertical-alignment:center;}
+            LineEdit{width:78px;text:i==0?root.start-a:root.start-b;edited=>{if i==0{root.start-a=self.text;}else{root.start-b=self.text;}}accessible-label:name+" start in seconds";}
+        }
+        HorizontalLayout{spacing:6px;
+            Text{text:"Shared duration (s)";color:DjTheme.text-secondary;vertical-alignment:center;}
+            LineEdit{width:76px;text<=>root.length;accessible-label:"Passage duration, one to sixteen seconds";}
+            Button{text:"Measure loudness";clicked=>{root.measure();}}
+            Rectangle{horizontal-stretch:1;}
+        }
+        Text{text:"Full mix · B minus A   "+root.mix;color:DjTheme.text-primary;wrap:word-wrap;}
+        Text{text:"Drums · B minus A   "+root.drums;color:DjTheme.text-primary;wrap:word-wrap;}
+        HorizontalLayout{spacing:5px;
+            Text{text:"Tempo A ×";color:DjTheme.text-secondary;vertical-alignment:center;}LineEdit{width:52px;text<=>root.tempo-a;}
+            Text{text:"B ×";color:DjTheme.text-secondary;vertical-alignment:center;}LineEdit{width:52px;text<=>root.tempo-b;}
+            Text{text:"B delay (s)";color:DjTheme.text-secondary;vertical-alignment:center;}LineEdit{width:62px;text<=>root.offset-b;}
+            Button{text:"Find vocal overlaps";clicked=>{root.scan-vocals();}}
+        }
+        HorizontalLayout{spacing:5px;
+            ComboBox{model:root.overlaps;current-index:root.overlap-index;horizontal-stretch:1;enabled:root.overlaps.length>0;accessible-label:"Overlapping vocals on transition timeline";selected(item)=>{root.select-overlap(self.current-index);}}
+            Button{text:"Hear overlap";enabled:root.vocal-route && root.overlap-index>=0;clicked=>{root.hear-overlap();}}
+            Button{text:"Stop";clicked=>{root.stop-overlap();}}
+        }
+        Text{text:root.vocal-status;color:DjTheme.text-secondary;wrap:word-wrap;}
+        if !root.vocal-route:Text{text:"Vocal audition needs a separate headphone output.";color:DjTheme.text-secondary;}
+        Rectangle{vertical-stretch:1;}
+        Text{text:root.status;color:DjTheme.text-secondary;wrap:word-wrap;}
+        HorizontalLayout{Rectangle{horizontal-stretch:1;}Button{text:"Close";clicked=>{root.dismiss();}}}
+    }
+}

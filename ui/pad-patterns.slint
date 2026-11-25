@@ -1,0 +1,69 @@
+import { Button, ComboBox, ListView, SpinBox } from "std-widgets.slint";
+import { DjTheme } from "theme.slint";
+export component PadPatternWindow inherits Window {
+    title:"Sampler patterns"; preferred-width:610px;preferred-height:470px;min-width:470px;min-height:380px;
+    background:DjTheme.app-bg;
+    in property <bool> recording;
+    in property <bool> draft;
+    in property <bool> saving;
+    in property <bool> ready;
+    in property <bool> has-headphones;
+    in property <bool> playing;
+    in property <bool> fill-ready;
+    in property <bool> pending;
+    in property <bool> has-base;
+    in property <int> target-index;
+    in property <bool> can-accept;
+    in property <[string]> rows;
+    in property <string> status;
+    in property <string> transport;
+    callback record-take(bool,int);
+    callback stop-recording();
+    callback accept-take();
+    callback discard-take();
+    callback audition-take();
+    callback stop-preview();
+    callback start-pattern();
+    callback stop-pattern();
+    callback arm-fill();
+    callback cancel-fill();
+    callback trigger-pad(int);
+    callback select-target(bool);
+    callback dismiss();
+    VerticalLayout {
+        padding:12px;spacing:7px;
+        HorizontalLayout {
+            spacing:5px;
+            target:=ComboBox { model:["Base · 4 bars","Fill · 1 bar"];current-index:root.target-index;enabled:!root.draft && !root.saving;accessible-label:"Pattern target";selected=>{root.select-target(self.current-index==1);} }
+            Text {text:"BPM";color:DjTheme.text-secondary;vertical-alignment:center;}
+            tempo:=SpinBox {minimum:40;maximum:240;value:120;enabled:!root.draft;accessible-label:"Recording tempo";}
+            Rectangle {horizontal-stretch:1;}
+            Button {text:"Close"; clicked=>{root.dismiss();}}
+        }
+        HorizontalLayout {
+            spacing:5px;
+            Button {text:"Record";enabled:root.ready && !root.draft;clicked=>{root.record-take(target.current-index==1,tempo.value);}}
+            Button {text:"End take";enabled:root.recording;clicked=>{root.stop-recording();}}
+            for p in 4 : Button {text:"Pad "+(p+1);accessible-label:"Trigger sampler pad "+(p+1);clicked=>{root.trigger-pad(p);}}
+        }
+        ListView {for row in root.rows : Text {text:row;height:21px;color:DjTheme.text-primary;}}
+        HorizontalLayout {
+            spacing:5px;
+            Button {text:"Hear take";enabled:root.draft && !root.recording && root.has-headphones;clicked=>{root.audition-take();}}
+            Button {text:"Stop PFL";clicked=>{root.stop-preview();}}
+            Rectangle {horizontal-stretch:1;}
+            Button {text:"Discard";enabled:root.draft && !root.recording && !root.saving;clicked=>{root.discard-take();}}
+            Button {text:"Replace target";enabled:root.can-accept;clicked=>{root.accept-take();}}
+        }
+        if !root.has-headphones : Text {text:"Hearing a take requires a separate headphone output.";color:DjTheme.text-secondary;wrap:word-wrap;}
+        HorizontalLayout {
+            spacing:5px;
+            Button {text:"Play base";enabled:root.has-base && !root.playing;clicked=>{root.start-pattern();}}
+            Button {text:"Stop pattern";enabled:root.playing;clicked=>{root.stop-pattern();}}
+            Button {text:"Queue fill";enabled:root.playing && root.fill-ready && !root.pending;clicked=>{root.arm-fill();}}
+            Button {text:"Cancel fill";enabled:root.pending;clicked=>{root.cancel-fill();}}
+        }
+        Text {text:root.transport;color:DjTheme.text-primary;accessible-role:text;accessible-label:"Pattern transport";accessible-description:self.text;}
+        Text {text:root.status;color:DjTheme.text-secondary;wrap:word-wrap;accessible-role:text;accessible-label:"Recording status";accessible-description:self.text;}
+    }
+}

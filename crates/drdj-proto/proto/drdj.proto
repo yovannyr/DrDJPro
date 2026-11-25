@@ -48,6 +48,7 @@ message BeatGridMessage {
   repeated TempoChangeMessage tempo_changes = 6;
   repeated MeterChangeMessage meter_changes = 7;
   repeated BeatPointMessage points = 8;
+  optional bool locked = 9;
 }
 message LoopMessage {
   required uint32 start_bar = 1;
@@ -126,6 +127,8 @@ message NativeMetadataMessage {
   required bool scanned = 7;
   optional string error = 8;
   optional bool prefer_imported_tags = 9;
+  optional string confirmed_key = 10;
+  optional uint32 dj_energy = 11;
 }
 message NativeTrackMessage {
   required sint32 id = 1;

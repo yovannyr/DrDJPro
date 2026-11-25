@@ -20,6 +20,7 @@ ml-import = ["dep:drdj-ml", "dep:bytemuck"]
 dvs-xwax = ["dep:drdj-dvs"]
 
 [dependencies]
+ab_glyph = "=0.2.32"
 drdj-ml = { path = "crates/drdj-ml", features = ["ort"], optional = true }
 sha2 = "=0.10.9"
 base64 = "=0.23.1"

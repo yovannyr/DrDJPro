@@ -1,0 +1,96 @@
+import { Button, SpinBox, LineEdit } from "std-widgets.slint";
+import { DjTheme } from "theme.slint";
+import { LibraryButton } from "controls.slint";
+export component SamplerToolsWindow inherits Window {
+    title:"Sampler pad tools"; preferred-width:640px;preferred-height:415px;
+    min-width:540px;min-height:365px;background:DjTheme.app-bg;
+    in property<int> slot;
+    in property<string> source;
+    in property<string> reading;
+    in-out property<int> root-note:69;
+    in-out property<int> correction;
+    in property<bool> ready;
+    in property<bool> pfl;
+    in property<string> status;
+    callback select-pad(int);
+    callback reference(int);
+    callback confirm(int,int);
+    callback reset-tuning();
+    private property<int> page;
+    in property<string> second-source;
+    in-out property<string> layer-name;
+    in-out property<int> delay-a; in-out property<int> delay-b;
+    in-out property<int> level-a:100; in-out property<int> level-b:100;
+    in-out property<int> pan-a; in-out property<int> pan-b;
+    callback apply-layers(bool);
+    in property<string> scale-description;
+    in property<string> active-scale;
+    in property<bool> scale-ready;
+    callback propose-scale(int);
+    callback audition-scale();
+    callback confirm-scale();
+    callback normal-pads();
+    callback dismiss();
+    VerticalLayout {
+        padding:12px;spacing:8px;
+        HorizontalLayout {
+            spacing:5px;
+            for n[i] in ["Pad 1","Pad 2","Pad 3","Pad 4"]: LibraryButton {text:n;active:root.slot==i;clicked=>{root.select-pad(i);}}
+            Rectangle{horizontal-stretch:1;}
+            LibraryButton{text:"Close";clicked=>{root.dismiss();}}
+        }
+        Text{text:root.source;color:DjTheme.text-primary;overflow:elide;}
+        HorizontalLayout {
+            spacing:5px;
+            LibraryButton{text:"Tuning";active:root.page==0;clicked=>{root.page=0;}}
+            LibraryButton{text:"Layers";active:root.page==1;clicked=>{root.page=1;}}
+            LibraryButton{text:"Tonal pads";active:root.page==2;clicked=>{root.page=2;}}
+        }
+        if root.page==0: VerticalLayout {
+        Text{text:root.reading;color:DjTheme.text-secondary;wrap:word-wrap;}
+        HorizontalLayout {
+            spacing:6px;
+            Text{text:"Root (MIDI)";color:DjTheme.text-primary;vertical-alignment:center;}
+            SpinBox{minimum:0;maximum:127;value<=>root.root-note;accessible-label:"Confirmed sample root MIDI note";}
+            Text{text:"Correction (ct)";color:DjTheme.text-primary;vertical-alignment:center;}
+            SpinBox{minimum:-1200;maximum:1200;value<=>root.correction;accessible-label:"Pad playback correction in cents";}
+        }
+        HorizontalLayout {
+            spacing:6px;
+            Button{text:"Reference · PFL";enabled:root.pfl;clicked=>{root.reference(root.root-note);}}
+            Button{text:"Confirm tuning";enabled:root.ready;clicked=>{root.confirm(root.root-note,root.correction);}}
+            Button{text:"Reset";enabled:root.ready;clicked=>{root.reset-tuning();}}
+        }
+        }
+        if root.page==1: VerticalLayout {
+            spacing:5px;
+            LineEdit{text<=>root.layer-name;placeholder-text:"Combination name";accessible-label:"Layer combination name";}
+            Text{text:root.second-source;color:DjTheme.text-secondary;overflow:elide;}
+            GridLayout {
+                spacing:4px;
+                Row {Text{text:"Layer";color:DjTheme.text-secondary;}Text{text:"Delay (ms)";color:DjTheme.text-secondary;}Text{text:"Level (%)";color:DjTheme.text-secondary;}Text{text:"Pan (L/R)";color:DjTheme.text-secondary;}}
+                Row {Text{text:"First";color:DjTheme.text-primary;}SpinBox{minimum:0;maximum:5000;value<=>root.delay-a;}SpinBox{minimum:0;maximum:100;value<=>root.level-a;}SpinBox{minimum:-100;maximum:100;value<=>root.pan-a;}}
+                Row {Text{text:"Second";color:DjTheme.text-primary;}SpinBox{minimum:0;maximum:5000;value<=>root.delay-b;}SpinBox{minimum:0;maximum:100;value<=>root.level-b;}SpinBox{minimum:-100;maximum:100;value<=>root.pan-b;}}
+            }
+            HorizontalLayout {
+                Button{text:"Choose second sample and apply";enabled:root.ready;clicked=>{root.apply-layers(true);}}
+                Button{text:"Apply edits";enabled:root.ready&&root.second-source!="No second sample";clicked=>{root.apply-layers(false);}}
+            }
+        }
+        Text{text:root.status;color:DjTheme.text-primary;wrap:word-wrap;}
+        if root.page==2: VerticalLayout {
+            spacing:6px;
+            Text{text:root.active-scale;color:DjTheme.text-primary;wrap:word-wrap;}
+            HorizontalLayout{
+                Button{text:"Use deck A key";clicked=>{root.propose-scale(0);}}
+                Button{text:"Use deck B key";clicked=>{root.propose-scale(1);}}
+            }
+            Text{text:root.scale-description;color:DjTheme.text-primary;wrap:word-wrap;}
+            HorizontalLayout{
+                Button{text:"Audition · PFL";enabled:root.scale-ready&&root.pfl;clicked=>{root.audition-scale();}}
+                Button{text:"Confirm bank";enabled:root.scale-ready;clicked=>{root.confirm-scale();}}
+                Button{text:"Normal pads";clicked=>{root.normal-pads();}}
+            }
+        }
+    }
+}

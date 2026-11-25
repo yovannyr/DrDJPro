@@ -11,9 +11,13 @@ mod audio_formats;
 mod audio_identity;
 mod beatgrid;
 mod cancellation;
+mod chord_passage;
+mod chord_timing;
+mod clip_export;
 mod controller;
 mod cover_art;
 mod cover_cache;
+mod crate_order;
 mod crates;
 mod cue_bus;
 mod deck_render;
@@ -32,9 +36,12 @@ mod legacy_catalog;
 mod library;
 mod library_perf;
 mod library_store;
+mod local_harmony;
 mod looping;
 mod mc4000;
 mod media_input;
+mod midi_file;
+mod midi_scene;
 mod mixer_dsp;
 mod opus_audio;
 mod output_preferences;
@@ -45,10 +52,16 @@ mod phase_sync;
 mod pitch_control;
 mod playback;
 mod playback_speed;
+mod portable_set;
 mod preferences;
 mod render_bus;
 mod sampler;
 mod saved_loops;
+mod scene_bridge;
+mod scene_transcription;
+mod set_planner;
+mod set_timeline;
+mod source_monitor;
 mod sync_control;
 mod table_columns;
 mod tempo;
@@ -58,6 +71,7 @@ mod track_metadata;
 mod transport;
 mod waveform;
 mod waveform_color;
+mod waveform_layers;
 
 use drdjpro_ui_spike::*;
 
@@ -373,6 +387,32 @@ fn main() -> Result<(), slint::PlatformError> {
                     ui.set_controller_shift(false);
                 }
                 mc4000::release_for_reconnect(&mut midi, reconnect);
+                if let Some(midi) = &mut midi {
+                    midi.discard_buttons_before(controller.transport_accept_after());
+                    if midi.poll(|command, received| {
+                        let before = (ui.get_left_playing(), ui.get_right_playing());
+                        let transport = matches!(&command, mc4000::Command::Toggle(_));
+                        if midi_trace && transport {
+                            eprintln!("MC4000 dispatch {command:?} playing_before={before:?}");
+                        }
+                        controller.with_midi_time(received, || mc4000::apply(&ui, command));
+                        if midi_trace && transport {
+                            eprintln!(
+                                "MC4000 playing_after={:?}",
+                                (ui.get_left_playing(), ui.get_right_playing())
+                            );
+                        }
+                    }) {
+                        ui.invoke_controller_platter_touch(0, false);
+                        ui.invoke_controller_platter_touch(1, false);
+                        controller.mc4000_release_holds();
+                        ui.set_controller_shift(false);
+                        ui.set_status(
+                            "MC4000 input queue overflow; platter and pitch holds released safely"
+                                .into(),
+                        );
+                    }
+                }
                 if reconnect || midi_discovery.elapsed() >= Duration::from_secs(2) {
                     midi_discovery = std::time::Instant::now();
                     match mc4000::present() {
@@ -428,32 +468,6 @@ fn main() -> Result<(), slint::PlatformError> {
                             Ok(()) => "MC4000 input connected; LEDs unavailable (retrying)".into(),
                         };
                         ui.set_controller_status(message.into());
-                    }
-                }
-                if let Some(midi) = &mut midi {
-                    midi.discard_buttons_before(controller.transport_accept_after());
-                    if midi.poll(|command| {
-                        let before = (ui.get_left_playing(), ui.get_right_playing());
-                        let transport = matches!(&command, mc4000::Command::Toggle(_));
-                        if midi_trace && transport {
-                            eprintln!("MC4000 dispatch {command:?} playing_before={before:?}");
-                        }
-                        mc4000::apply(&ui, command);
-                        if midi_trace && transport {
-                            eprintln!(
-                                "MC4000 playing_after={:?}",
-                                (ui.get_left_playing(), ui.get_right_playing())
-                            );
-                        }
-                    }) {
-                        ui.invoke_controller_platter_touch(0, false);
-                        ui.invoke_controller_platter_touch(1, false);
-                        controller.mc4000_release_holds();
-                        ui.set_controller_shift(false);
-                        ui.set_status(
-                            "MC4000 input queue overflow; platter and pitch holds released safely"
-                                .into(),
-                        );
                     }
                 }
                 controller.tick();

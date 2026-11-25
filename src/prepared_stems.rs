@@ -1,15 +1,21 @@
 //! Worker-only, content-addressed four-stem cache. Two replaceable slots;
 //! each complete file and each in-progress writer is bounded to 128 MiB.
-use crate::media::stems::{StemCache, StemMixState, VoiceCategory};
+#[cfg(feature = "ml-import")]
+use crate::media::stems::StemCache;
+use crate::media::stems::{StemMixState, VoiceCategory};
+#[cfg(feature = "ml-import")]
 use drdj_ml::stem_tracking::Separator;
-use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
+use flate2::read::ZlibDecoder;
+#[cfg(feature = "ml-import")]
+use flate2::{write::ZlibEncoder, Compression};
 use sha2::{Digest, Sha256};
+#[cfg(feature = "ml-import")]
+use std::process::{Command, Stdio};
 use std::{
     error::Error,
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
     path::Path,
-    process::{Command, Stdio},
 };
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -18,8 +24,10 @@ const MAX_FRAMES: u64 = 44_100 * 3600;
 const MAGIC: &[u8; 8] = b"DRDJST02";
 const FRAMES_OFFSET: u64 = 40;
 const PAYLOAD_OFFSET: u64 = FRAMES_OFFSET + 8 + 32;
+#[cfg(feature = "ml-import")]
 const STAGING: &str = "spleeter-preparation.partial";
 
+#[cfg(feature = "ml-import")]
 fn reserve_writer(cache: &Path) -> Result<(File, tempfile::NamedTempFile)> {
     let lock = File::options()
         .read(true)
@@ -43,6 +51,7 @@ fn reserve_writer(cache: &Path) -> Result<(File, tempfile::NamedTempFile)> {
     Ok((lock, temp))
 }
 
+#[cfg(feature = "ml-import")]
 fn identity(path: &Path, cancel: &impl Fn() -> bool) -> Result<[u8; 32]> {
     let mut file = File::open(path)?;
     hash_remaining(&mut file, Sha256::new_with_prefix(MAGIC), cancel)
@@ -73,7 +82,117 @@ pub struct PreparedStems {
     frames: u64,
 }
 impl PreparedStems {
+    /// Read the existing versioned snapshot. This never prepares a replacement or loads inference models.
+    pub fn cached(source: &mut File, cancel: impl Fn() -> bool) -> Result<Self> {
+        let cache = std::env::var_os("DRDJ_STEM_CACHE")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .ok_or("No prepared stem cache configured")?;
+        source.seek(SeekFrom::Start(0))?;
+        let key = hash_remaining(source, Sha256::new_with_prefix(MAGIC), &cancel)?;
+        Self::open(
+            &cache.join(format!("spleeter-v1-{}.stems", key[0] % 2)),
+            &key,
+            &cancel,
+        )
+    }
+    /// Visit exactly the requested stereo interval on the source's 44.1 kHz stem clock.
+    pub fn visit_window(
+        self,
+        category: VoiceCategory,
+        start_ms: u64,
+        length_ms: u64,
+        cancel: impl Fn() -> bool,
+        mut consume: impl FnMut(&[f32]) -> Result<()>,
+    ) -> Result<()> {
+        let offset = match category {
+            VoiceCategory::Vocals => 0,
+            VoiceCategory::Drums => 4,
+            VoiceCategory::Bass => 8,
+            VoiceCategory::Melody => 12,
+            _ => return Err("Unsupported prepared stem category".into()),
+        };
+        let mut pcm = Vec::with_capacity(4096 * 2);
+        self.visit_frames(start_ms, length_ms, cancel, |data| {
+            pcm.clear();
+            for frame in data.as_chunks::<16>().0 {
+                for ch in [offset, offset + 2] {
+                    pcm.push(f32::from(i16::from_le_bytes([frame[ch], frame[ch + 1]])) / 32768.);
+                }
+            }
+            consume(&pcm)
+        })
+    }
+    /// Aggregate prepared vocal and accompanying stem power in 50-ms windows.
+    /// Values use full-scale sample powers, per channel. The final bin may be shorter.
+    pub fn vocal_evidence(
+        self,
+        start_ms: u64,
+        length_ms: u64,
+        cancel: impl Fn() -> bool,
+    ) -> Result<Vec<(f64, f64)>> {
+        let mut bins = Vec::new();
+        let (mut vocal, mut other, mut n) = (0., 0., 0u32);
+        self.visit_frames(start_ms, length_ms, cancel, |bytes| {
+            for frame in bytes.as_chunks::<16>().0 {
+                for (i, sample) in frame.as_chunks::<2>().0.iter().enumerate() {
+                    let power =
+                        (f64::from(i16::from_le_bytes([sample[0], sample[1]])) / 32768.).powi(2);
+                    if i < 2 {
+                        vocal += power;
+                    } else {
+                        other += power;
+                    }
+                }
+                n += 1;
+                if n == 2205 {
+                    bins.push((vocal / (2. * f64::from(n)), other / (2. * f64::from(n))));
+                    vocal = 0.;
+                    other = 0.;
+                    n = 0;
+                }
+            }
+            Ok(())
+        })?;
+        if n > 0 {
+            bins.push((vocal / (2. * f64::from(n)), other / (2. * f64::from(n))));
+        }
+        Ok(bins)
+    }
+    fn visit_frames(
+        self,
+        start_ms: u64,
+        length_ms: u64,
+        cancel: impl Fn() -> bool,
+        mut consume: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
+        let start = start_ms.checked_mul(44100).ok_or("Invalid stem start")? / 1000;
+        let end = start
+            .checked_add(length_ms.checked_mul(44100).ok_or("Invalid stem length")? / 1000)
+            .ok_or("Invalid stem interval")?;
+        if end <= start || end > self.frames {
+            return Err("Stem does not span the requested passage".into());
+        }
+        let mut reader = ZlibDecoder::new(self.file);
+        let mut buf = vec![0u8; 4096 * 16];
+        let mut pos = 0u64;
+        while pos < end {
+            if cancel() {
+                return Err("Cancelled".into());
+            }
+            let count = (end - pos).min(4096) as usize;
+            let bytes = &mut buf[..count * 16];
+            reader.read_exact(bytes)?;
+            let skip = start.saturating_sub(pos).min(count as u64) as usize;
+            if skip < count {
+                consume(&bytes[skip * 16..])?;
+            }
+            pos += count as u64;
+        }
+        Ok(())
+    }
     /// Use the explicit offline import settings, also used by the stem mix command.
+    #[cfg(feature = "ml-import")]
     pub fn configured(source: &Path, cancel: impl Fn() -> bool) -> Result<Self> {
         let setting = |name| {
             std::env::var_os(name)
@@ -91,8 +210,16 @@ impl PreparedStems {
     }
 
     fn open(path: &Path, key: &[u8; 32], cancel: &impl Fn() -> bool) -> Result<Self> {
-        let mut file = File::open(path)?;
-        if file.metadata()?.len() > LIMIT {
+        let mut opts = File::options();
+        opts.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.custom_flags(libc::O_NONBLOCK);
+        }
+        let mut file = opts.open(path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() > LIMIT {
             return Err("oversize stem cache".into());
         }
         let mut header = [0; 48];
@@ -116,6 +243,7 @@ impl PreparedStems {
     }
 }
 
+#[cfg(feature = "ml-import")]
 impl StemCache {
     /// Prepare from the original file. A hit opens its existing snapshot before
     /// loading any model. Publish only after EOF, decoder success and a final
@@ -274,6 +402,7 @@ impl StemMixState {
 }
 
 /// CLI export with explicit per-stem gains in vocals/drums/bass/other order.
+#[cfg(feature = "ml-import")]
 pub fn mix_command(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<()> {
     let source = args.next().ok_or("expected source path and four gains")?;
     let mut state = StemMixState::new();
@@ -300,7 +429,7 @@ pub fn mix_command(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result
     state.render_prepared(stems, std::io::stdout().lock())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ml-import"))]
 mod tests {
     use super::*;
 

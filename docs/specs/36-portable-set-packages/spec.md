@@ -1,6 +1,8 @@
 # Spec 36 – Transportable Setpakete und Übergabe an einen zweiten DJ
 
-**Stand 23. November 2026.** Geplante Funktion, fachliche und technische Abnahme offen. Die beiden Ausbaustufen stehen im [priorisierten Umsetzungsplan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md).
+**Stand 24. November 2026.** Beide Ausbaustufen sind im Feature-Branch unter **Prepare → Set planning → Portable sets** angeschlossen. Testergebnisse, Messbedingungen und offene Gegenproben stehen im [Prüfbericht zu den 35 Funktionen](../MUSIKVORBEREITUNG_ABSCHLUSSPRUEFUNG.md). [Umsetzungsplan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md)
+
+Der Export schreibt einen neuen Ordner mit `set.json` und den ausgewählten Medien. Das Manifest hält Cue- und Übergangszeiten in Nanosekunden fest. **Open package** öffnet das Manifest am Zielrechner. Nach dem Abgleich kann der DJ die Liste mit **Save to catalog** dauerhaft in der lokalen SQLite-Bibliothek speichern. Zugeordnete Aufnahmen laufen von ihrem jeweiligen Speicherort. Bei mitgelieferter Musik muss der Paketordner daher zum Auflegen verfügbar sein. **Load A/B** erhält bereits belegte, widersprüchliche Cue-Slots. Ihre Übernahme erfordert den gesonderten Cue-Befehl am gewählten Eintrag.
 
 ## Ziel und Nutzerablauf
 

@@ -64,23 +64,70 @@ impl Control {
         });
     }
 }
-/// Delay then filter per slot; the three slots are composed in fixed order1->2->3.
+/// The first post-fader effect takes the cue snapshot after pulling the first
+/// source sample. The remaining effects inherit its decision for this frame.
+pub(crate) enum AuxRoute<S> {
+    None,
+    Deck([Arc<crate::cue_bus::DeckMixControl>; 2], usize),
+    FromSource(fn(&S) -> bool),
+}
+
+impl<S> AuxRoute<S> {
+    pub fn deck(controls: [Arc<crate::cue_bus::DeckMixControl>; 2], deck: usize) -> Self {
+        assert!(deck < 2);
+        Self::Deck(controls, deck)
+    }
+    pub fn active(&self, input: &S) -> bool {
+        match self {
+            Self::None => false,
+            Self::FromSource(snapshot) => snapshot(input),
+            Self::Deck(controls, deck) => {
+                controls[*deck].rendered_cue()
+                    || controls[0].monitor_mode()
+                    || controls[1].monitor_mode()
+            }
+        }
+    }
+}
+
+/// Delay then filter per slot; the three slots are composed in fixed order 1->2->3.
 pub(crate) fn source<S: rodio::Source>(
     input: S,
     control: &Control,
-    ring: Arc<delay_fx::DelayRing>,
-    cue: [Arc<crate::cue_bus::DeckMixControl>; 2],
-    deck: usize,
+    ring: delay_fx::DelayRing,
+    route: AuxRoute<S>,
 ) -> mixer_dsp::EqSource<delay_fx::DelaySource<S>> {
     mixer_dsp::EqSource::new(
-        delay_fx::DelaySource::new(input, Arc::clone(&control.delay), ring)
-            .with_cue_controls(cue.clone(), deck),
+        delay_fx::DelaySource::new(input, Arc::clone(&control.delay), ring).with_route(route),
         Arc::clone(&control.filter),
     )
-    .with_cue_controls(cue, deck)
+    .with_route(AuxRoute::FromSource(delay_fx::DelaySource::rendered_aux))
+}
+
+pub(crate) fn chain<S: rodio::Source>(
+    input: S,
+    controls: &[Arc<Control>; 3],
+    rings: [delay_fx::DelayRing; 3],
+    cue: [Arc<crate::cue_bus::DeckMixControl>; 2],
+    deck: usize,
+) -> impl rodio::Source {
+    let [first, second, third] = rings;
+    let a = source(input, &controls[0], first, AuxRoute::deck(cue, deck));
+    let b = source(
+        a,
+        &controls[1],
+        second,
+        AuxRoute::FromSource(mixer_dsp::EqSource::rendered_aux),
+    );
+    source(
+        b,
+        &controls[2],
+        third,
+        AuxRoute::FromSource(mixer_dsp::EqSource::rendered_aux),
+    )
 }
 /// Three one-second rings share an aggregate64MiB per-deck limit, checked before allocation.
-pub(crate) fn rings(rate: u32, channels: u16) -> Result<[Arc<delay_fx::DelayRing>; 3], String> {
+pub(crate) fn rings(rate: u32, channels: u16) -> Result<[delay_fx::DelayRing; 3], String> {
     let bytes = (u64::from(rate) + 1) * u64::from(channels) * 4 * 3;
     if bytes > 64 * 1024 * 1024 {
         return Err("FX chain exceeds64 MiB per deck".into());
@@ -115,15 +162,13 @@ mod tests {
         let mut samples = vec![0.; 200];
         samples[0] = 0.5;
         samples[1] = -0.5;
-        let a = source(
+        let mut c = chain(
             rodio::buffer::SamplesBuffer::new(2, 1000, samples),
-            &controls[0],
-            rings[0].clone(),
-            cue.clone(),
+            &controls,
+            rings,
+            cue,
             0,
         );
-        let b = source(a, &controls[1], rings[1].clone(), cue.clone(), 0);
-        let mut c = source(b, &controls[2], rings[2].clone(), cue, 0);
         for frame in 0..100 {
             let a = c.next().unwrap();
             let b = c.next().unwrap();
@@ -132,6 +177,40 @@ mod tests {
         }
         assert!(super::rings(192000, 32).is_err());
     }
+    #[test]
+    fn fx_chain_inherits_the_frame_route_across_all_three_live_slots() {
+        let controls = std::array::from_fn(|_| Control::new(1000));
+        for control in &controls {
+            control.publish(Slot {
+                kind: Kind::HighPass,
+                delay: delay_fx::DelaySettings {
+                    enabled: true,
+                    wet: 1.,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        }
+        let cue = std::array::from_fn(|_| crate::cue_bus::DeckMixControl::new());
+        cue[1].set_monitor_mode(true);
+        let input = rodio::buffer::SamplesBuffer::new(4, 1000, [0.1, 0.2, 0.3, -0.4].repeat(3));
+        let mut rack = chain(input, &controls, rings(1000, 4).unwrap(), cue.clone(), 0);
+        rack.next().unwrap();
+        cue[1].set_monitor_mode(false);
+        rack.next().unwrap();
+        assert_eq!(rack.next(), Some(0.3));
+        assert_eq!(rack.next(), Some(-0.4));
+        rack.next().unwrap();
+        cue[1].set_monitor_mode(true);
+        rack.next().unwrap();
+        assert!(rack.next().unwrap().abs() < 0.25);
+        assert!(rack.next().unwrap().abs() < 0.25);
+        rack.next().unwrap();
+        rack.next().unwrap();
+        assert_eq!(rack.next(), Some(0.3));
+        assert_eq!(rack.next(), Some(-0.4));
+    }
+
     #[test]
     fn fx_chain_filters_frequency_and_cue_isolation() {
         for (kind, hz) in [(Kind::LowPass, 1000.), (Kind::HighPass, 100.)] {
@@ -149,9 +228,8 @@ mod tests {
             let mut filtered = source(
                 rodio::source::SineWave::new(hz).amplify(0.1),
                 &control,
-                super::rings(48000, 1).unwrap()[0].clone(),
-                cue,
-                0,
+                delay_fx::DelayRing::new(48000, 1).unwrap(),
+                AuxRoute::deck(cue, 0),
             );
             filtered.by_ref().take(24000).for_each(drop);
             let rms = (filtered
@@ -178,9 +256,8 @@ mod tests {
         let mut output = source(
             rodio::buffer::SamplesBuffer::new(4, 1000, [0.1, 0.2, 0.3, -0.4].repeat(100)),
             &control,
-            super::rings(1000, 4).unwrap()[0].clone(),
-            cue.clone(),
-            0,
+            delay_fx::DelayRing::new(1000, 4).unwrap(),
+            AuxRoute::deck(cue.clone(), 0),
         );
         for _ in 0..100 {
             output.next();

@@ -1,6 +1,6 @@
 # Spec 33 – Harmonieverlauf im Übergang
 
-**Stand:** Planung vom 23. November 2026. Die Umsetzung und die musikalische Abnahme stehen aus. Reihenfolge und Abhängigkeiten stehen im [Umsetzungsplan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md).
+**Stand 24. November 2026.** Für die lokale Tonartspur A06 liegen automatisierte Ergebnisse vor. Die Akkordspur D01 und der MIDI-Export D02 sind im Feature-Branch umgesetzt. Testergebnisse, Messbedingungen und offene Gegenproben stehen im [Prüfbericht zu den 35 Funktionen](../MUSIKVORBEREITUNG_ABSCHLUSSPRUEFUNG.md). [Umsetzungsplan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md) · [A06-Prüfbericht](A06_ABNAHME.md) · [D01-Prüfverfahren](D01_ABNAHME.md)
 
 ## Ziel und Bestand
 

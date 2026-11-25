@@ -49,6 +49,7 @@ pub fn load(path: &Path) -> Result<(Catalog, &'static str), String> {
     }
     Ok((
         Catalog {
+            gigs: Default::default(),
             prep_queue: Vec::new(),
             version: 1,
             crates: Default::default(),

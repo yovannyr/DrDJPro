@@ -1,0 +1,88 @@
+import { Button,LineEdit,SpinBox,ComboBox,ListView,CheckBox,ScrollView } from "std-widgets.slint";
+import { DjTheme } from "theme.slint";
+import { SceneScalePanel } from "scene-scale.slint";
+export component SceneWindow inherits Window{
+    title:"MIDI scene";preferred-width:850px;preferred-height:570px;min-width:665px;min-height:430px;background:DjTheme.app-bg;
+    in-out property<string> scene-name:"My scene";in property<string> status;in property<bool> route;in property<bool> can-undo;
+    in-out property<string> bpm:"120";in-out property<int> numerator:4;in-out property<int> denominator:4;in-out property<int> bars:4;
+    in-out property<string> key;in property<[string]> rows;in property<int> selected:-1;
+    in-out property<int> role-index;in-out property<string> start-tick:"0";in-out property<string> duration-tick:"120";in-out property<int> pitch:60;in-out property<int> velocity:96;in-out property<bool> approved:true;
+    in-out property<int> mask;in-out property<int> intensity;in-out property<int> max-ms:12;
+    in-out property<string> source-start:"0";in-out property<string> source-length:"8";in property<string> source-label;
+    in property<bool> variants-ready;
+    in-out property<int> source-kind;
+    in property<[string]> scale-rows;in property<[string]> scale-issues;in property<string> scale-status;in property<bool> scale-ready;in property<bool> scale-active;in property<int> scale-source-root;in property<bool> scale-source-minor;
+    callback propose-scale(int,bool,int,bool);callback resolve-scale(int,int);callback discard-scale();callback accept-scale();callback hear-scale(bool);
+    callback undo-scene();callback stop-scene();callback file(int);callback dismiss();callback set-timing();callback choose-event(int);callback edit-event(int);callback set-groove();callback hear-groove();
+    callback transcribe();callback link-source();callback original();callback hear-notes();callback generate-variants();callback hear-variant(int);callback accept-variant(int);callback export-role(int);
+    private property<int> page;
+    changed page=>{root.stop-scene();}
+    VerticalLayout {padding:11px;spacing:7px;
+        HorizontalLayout{spacing:4px;
+            LineEdit{text<=>root.scene-name;horizontal-stretch:1;accessible-label:"Scene filename";}
+            Button{text:"New";clicked=>{root.file(0);}}Button{text:"Open";clicked=>{root.file(1);}}Button{text:"Save";clicked=>{root.file(2);}}
+            Button{text:"Undo";enabled:root.can-undo;clicked=>{root.undo-scene();}}Button{text:"Close";clicked=>{root.dismiss();}}}
+        HorizontalLayout{spacing:5px;
+            Text{text:"BPM";color:DjTheme.text-secondary;vertical-alignment:center;} LineEdit{width:60px;text<=>root.bpm;}
+            SpinBox{width:68px;minimum:1;maximum:16;value<=>root.numerator;accessible-label:"Time signature numerator";}
+            Text{text:"/";color:DjTheme.text-secondary;vertical-alignment:center;}
+            SpinBox{width:68px;minimum:2;maximum:16;value<=>root.denominator;accessible-label:"Time signature denominator";}
+            Text{text:"Bars";color:DjTheme.text-secondary;vertical-alignment:center;}SpinBox{width:68px;minimum:1;maximum:32;value<=>root.bars;}
+            Text{text:"Key";color:DjTheme.text-secondary;vertical-alignment:center;}LineEdit{width:66px;text<=>root.key;placeholder-text:"C:maj";}
+            Button{text:"Confirm timing / key";clicked=>{root.set-timing();}}}
+        HorizontalLayout{spacing:4px;for name[i] in ["Events","Sampler groove","Audio phrase","Accompaniment","Scale"]:Button{text:name;checkable:true;checked:root.page==i;clicked=>{root.page=i;}}}
+        if root.page==0:VerticalLayout{
+            spacing:5px;ListView{vertical-stretch:1;for row[i] in root.rows:Button{text:row;checkable:true;checked:i==root.selected;clicked=>{root.choose-event(i);}}}
+            HorizontalLayout{spacing:4px;
+                ComboBox{model:["Melody","Accompaniment","Pad 1","Pad 2","Pad 3","Pad 4"];current-index<=>root.role-index;}
+                Text{text:"Pitch";color:DjTheme.text-secondary;vertical-alignment:center;}SpinBox{width:72px;minimum:0;maximum:127;value<=>root.pitch;}
+                Text{text:"Velocity";color:DjTheme.text-secondary;vertical-alignment:center;}SpinBox{width:70px;minimum:1;maximum:127;value<=>root.velocity;}
+                CheckBox{text:"Approved";checked<=>root.approved;}}
+            HorizontalLayout{spacing:4px;
+                Text{text:"Start tick";color:DjTheme.text-secondary;vertical-alignment:center;}LineEdit{width:70px;text<=>root.start-tick;}
+                Text{text:"Duration";color:DjTheme.text-secondary;vertical-alignment:center;}LineEdit{width:70px;text<=>root.duration-tick;}
+                Button{text:"Add";clicked=>{root.edit-event(0);}}Button{text:"Update";enabled:root.selected>=0;clicked=>{root.edit-event(1);}}
+                Button{text:"Remove";enabled:root.selected>=0;clicked=>{root.edit-event(2);}}}}
+        if root.page==1:VerticalLayout{spacing:6px;
+            Text{text:"Coupled sampler lanes";color:DjTheme.text-primary;}
+            HorizontalLayout{spacing:4px;for weight[i] in [1,2,4,8]:Button{text:"Pad "+(i+1);
+                checkable:true;checked:mod(floor(root.mask/weight),2)==1;
+                clicked => {
+                    if mod(floor(root.mask / weight), 2) == 1 {
+                        root.mask -= weight;
+                    } else {
+                        root.mask += weight;
+                    }
+                }
+            }}
+            HorizontalLayout{spacing:4px;Text{text:"Intensity (%)";color:DjTheme.text-secondary;vertical-alignment:center;}SpinBox{minimum:0;maximum:100;value<=>root.intensity;}
+            Text{text:"Max shift (ms)";color:DjTheme.text-secondary;vertical-alignment:center;}SpinBox{minimum:0;maximum:150;value<=>root.max-ms;}}
+            HorizontalLayout{Button{text:"Apply groove";clicked=>{root.set-groove();}}Button{text:"Hear sampler groove";enabled:root.route;clicked=>{root.hear-groove();}}}
+            Rectangle{vertical-stretch:1;}}
+        if root.page==2:VerticalLayout{spacing:6px;
+            Text{text:root.source-label==""?"Select an isolated vocal or bass file in the main library.":root.source-label;color:DjTheme.text-primary;wrap:word-wrap;}
+            HorizontalLayout{ComboBox{model:["Original / isolated file","Prepared bass stem","Prepared vocal stem"];current-index<=>root.source-kind;}
+                Button{text:"Link selected audio";clicked=>{root.link-source();}}}
+            HorizontalLayout{spacing:5px;Text{text:"Source start (s)";color:DjTheme.text-secondary;vertical-alignment:center;}LineEdit{width:73px;text<=>root.source-start;}
+                Text{text:"Duration (s)";color:DjTheme.text-secondary;vertical-alignment:center;}LineEdit{width:73px;text<=>root.source-length;}
+                Button{text:"Transcribe selected track";clicked=>{root.transcribe();}}}
+            HorizontalLayout{Button{text:"Hear original";enabled:root.route;clicked=>{root.original();}}Button{text:"Hear notes";enabled:root.route;clicked=>{root.hear-notes();}}
+                Button{text:"Export melody MIDI";clicked=>{root.export-role(0);}}}
+            Rectangle{vertical-stretch:1;}}
+        if root.page==3:VerticalLayout{spacing:6px;
+            Button{text:"Generate bass and chord variants";clicked=>{root.generate-variants();}}
+            HorizontalLayout{Button{text:"Original only";enabled:root.variants-ready&&root.route;clicked=>{root.hear-variant(0);}}
+                Button{text:"Hear bass";enabled:root.variants-ready&&root.route;clicked=>{root.hear-variant(1);}}
+                Button{text:"Hear chords";enabled:root.variants-ready&&root.route;clicked=>{root.hear-variant(2);}}}
+            HorizontalLayout{Button{text:"Use bass";enabled:root.variants-ready;clicked=>{root.accept-variant(1);}}
+                Button{text:"Use chords";enabled:root.variants-ready;clicked=>{root.accept-variant(2);}}
+                Button{text:"Export accompaniment MIDI";clicked=>{root.export-role(1);}}}
+            Rectangle{vertical-stretch:1;}}
+        if root.page==4:SceneScalePanel{
+            scale-rows:root.scale-rows;scale-issues:root.scale-issues;scale-status:root.scale-status;scale-ready:root.scale-ready;scale-active:root.scale-active;scale-source-root:root.scale-source-root;scale-source-minor:root.scale-source-minor;
+            propose-scale(a,b,c,d)=>{root.propose-scale(a,b,c,d);}resolve-scale(a,b)=>{root.resolve-scale(a,b);}discard-scale=>{root.discard-scale();}accept-scale=>{root.accept-scale();}hear-scale(p)=>{root.hear-scale(p);}undo-scene=>{root.undo-scene();}stop-scene=>{root.stop-scene();}}
+        Text{text:root.status;color:DjTheme.text-secondary;wrap:word-wrap;}
+        HorizontalLayout{if !root.route:Text{text:"A separate headphone output is required for audition.";color:DjTheme.text-secondary;vertical-alignment:center;}
+            Rectangle{horizontal-stretch:1;}Button{text:"Stop preview";clicked=>{root.stop-scene();}}}
+    }
+}

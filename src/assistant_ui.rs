@@ -11,7 +11,9 @@ pub(crate) fn suggest(
     db: &Path,
     id: i32,
     transition: bool,
+    cancel: &crate::cancellation::Cancellation,
 ) -> Result<String, String> {
+    cancel.check()?;
     let mut command = Command::new(if cfg!(windows) { "python" } else { "python3" });
     command.arg("-B").arg(script).arg("--library").arg(db);
     if let Some(dictionary) = std::env::var_os("DRDJ_EMBEDDING_DICTIONARY") {
@@ -40,7 +42,9 @@ pub(crate) fn suggest(
                     "Search failed. Check the saved library and descriptor dictionary.".into(),
                 )
             }
-            Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) if !cancel.is_cancelled() && Instant::now() < until => {
+                std::thread::sleep(Duration::from_millis(50))
+            }
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();

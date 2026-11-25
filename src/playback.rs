@@ -1,8 +1,24 @@
 //! Control-plane loading and two Rodio decks. Rodio itself is not lock-free.
+pub(crate) mod chord_preview;
+pub(crate) mod clip_diagnosis;
+pub(crate) use preview_clip::finish as prepared_preview;
+pub(crate) mod cue_trim;
+mod deck_input;
+mod fixed_mix;
+mod key_reference;
+mod preview_clip;
+mod sample_preview;
+mod scene_loop;
+pub(crate) use scene_loop::SceneLoopControl;
+pub(crate) mod tempo_preview;
 use crate::deck_render::{DeckRenderer, RenderControl, RenderFormat, SeekFrame};
 use crate::looping::{frame_at, frame_time, FrameLoop, PcmSource};
 use crate::playback_speed::PlaybackSpeed;
-use rodio::{mixer::Mixer, Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
+pub(crate) use preview_clip::{PreviewClip, SampleVersion, PREVIEW_DURATION};
+pub(crate) use sample_preview::SamplePreviewCache;
+/// Maximum resident decoded PCM capacity in the local sample browser cache.
+pub(crate) const MAX_SAMPLE_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
+use rodio::{mixer::Mixer, Decoder, OutputStream, OutputStreamBuilder, Source};
 use std::{
     cell::{Cell, RefCell},
     error::Error,
@@ -18,6 +34,33 @@ use std::{
 pub enum DeckId {
     A,
     B,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SectionJumpStatus {
+    Pending,
+    Executed,
+    Cancelled,
+}
+
+/// Identifies one request on one renderer. The control object owns no track PCM.
+#[derive(Clone)]
+pub(crate) struct PendingSectionJump {
+    render: Arc<RenderControl>,
+    serial: u64,
+}
+impl PendingSectionJump {
+    pub(crate) fn status(&self) -> SectionJumpStatus {
+        self.render.section_jump_status(self.serial)
+    }
+
+    /// The UI thread is the sole command writer. A superseding cue has a different serial.
+    pub(crate) fn cancel_if_pending(&self) -> SectionJumpStatus {
+        if self.status() == SectionJumpStatus::Pending {
+            self.render.cancel_trigger();
+        }
+        self.status()
+    }
 }
 /// Boundary selected for source-frame loop adjustment on the control plane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,6 +183,54 @@ impl PreparedTrack {
     pub fn duration(&self) -> Duration {
         self.samples.total_duration().unwrap_or_default()
     }
+
+    /// Reject package marks outside decoded audio before replacing the paused deck.
+    pub(crate) fn validate_source_range(
+        &self,
+        start: Duration,
+        end: Option<Duration>,
+    ) -> Result<(), String> {
+        let duration = self.duration();
+        let end = end.unwrap_or(duration);
+        if start >= end || end > duration {
+            return Err("Package marks are outside the recording.".into());
+        }
+        let rate = self.samples.sample_rate();
+        let end_frame = if end == duration {
+            self.samples.frames()
+        } else {
+            frame_at(end, rate)
+        };
+        FrameLoop::new(frame_at(start, rate), end_frame, self.samples.frames()).map(|_| ())
+    }
+}
+
+fn open_pcm_decoder(
+    path: &Path,
+) -> Result<Decoder<std::io::BufReader<crate::media_input::AudioWindow>>, String> {
+    let decode = |window: crate::media_input::AudioWindow| {
+        let len = window.len();
+        Decoder::builder()
+            .with_data(std::io::BufReader::new(window))
+            .with_byte_len(len)
+            .with_seekable(true)
+            .build()
+    };
+    let source = crate::media_input::AudioWindow::whole(path).map_err(|e| e.to_string())?;
+    decode(source)
+        .map_err(|e| e.to_string())
+        .or_else(|original| {
+            let recovered = match crate::media_input::recovery_source(path) {
+                Ok(source) => source,
+                Err(symphonia::core::errors::Error::Unsupported(
+                    "original parser accepted source",
+                )) => {
+                    return Err(original);
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            decode(recovered).map_err(|e| e.to_string())
+        })
 }
 
 pub(crate) fn decode_pcm(
@@ -155,28 +246,7 @@ pub(crate) fn decode_pcm(
     let (channels, rate, samples) = if crate::opus_audio::is_opus(&canonical)? {
         crate::opus_audio::decode(&canonical, limit, cancel)?
     } else {
-        let decode = |source: crate::media_input::AudioWindow| {
-            let len = source.len();
-            Decoder::builder()
-                .with_data(std::io::BufReader::new(source))
-                .with_byte_len(len)
-                .with_seekable(true)
-                .build()
-        };
-        let source =
-            crate::media_input::AudioWindow::whole(&canonical).map_err(|e| e.to_string())?;
-        let decoder = decode(source)
-            .map_err(|e| e.to_string())
-            .or_else(|original| {
-                let source = match crate::media_input::recovery_source(&canonical) {
-                    Ok(source) => source,
-                    Err(symphonia::core::errors::Error::Unsupported(
-                        "original parser accepted source",
-                    )) => return Err(original),
-                    Err(error) => return Err(error.to_string()),
-                };
-                decode(source).map_err(|e| e.to_string())
-            })?;
+        let decoder = open_pcm_decoder(&canonical)?;
         let channels = decoder.channels();
         let rate = decoder.sample_rate();
         if channels == 0 || rate == 0 {
@@ -235,7 +305,6 @@ fn collect_pcm(
 }
 struct Deck {
     meter: Option<Arc<crate::peak_meter::ChannelMeter>>,
-    sink: Sink,
     source_retired: Option<Arc<AtomicBool>>,
     render: Option<Arc<RenderControl>>,
     track: Option<PreparedTrack>,
@@ -250,11 +319,8 @@ struct Deck {
 }
 impl Deck {
     fn empty() -> Self {
-        let (sink, _unused_output) = Sink::new();
-        sink.pause();
         Self {
             meter: None,
-            sink,
             source_retired: None,
             render: None,
             track: None,
@@ -313,31 +379,53 @@ impl Deck {
             })
     }
 }
-// The queue starts with generic metadata. Expose the renderer's fixed device format
-// for its entire lifetime, including pause/EOF, so the mixer needs no rate conversion.
-struct DeckOutput {
-    queue: rodio::queue::SourcesQueueOutput,
+// Gate the full fixed-format deck chain so pausing freezes its meter and EQ as well as its PCM.
+// A scratch can open the gate independently of the underlying play/pause intent.
+struct DeckOutput<S> {
+    source: S,
     render: Arc<RenderControl>,
+    enabled_frame: bool,
+    muted_seek_frame: bool,
     channel: u16,
     channels: u16,
     sample_rate: u32,
-    // Rust drops fields in declaration order: publish only AFTER the queue's PCM Arc is gone.
+    // Rust drops fields in declaration order: acknowledge only AFTER the source's PCM Arc is gone.
     _retirement: SourceRetirement,
 }
-impl Iterator for DeckOutput {
+type InstalledDeckSource = DeckOutput<
+    crate::cue_bus::CueSend<
+        crate::source_monitor::Tap<
+            crate::peak_meter::Metered<crate::mixer_dsp::EqSource<DeckRenderer>>,
+        >,
+    >,
+>;
+impl<S: Source> Iterator for DeckOutput<S> {
     type Item = f32;
     fn next(&mut self) -> Option<f32> {
-        if self.channel == 0 && self.render.stopped.load(Ordering::Acquire) {
-            return None;
+        if self.channel == 0 {
+            if self.render.stopped.load(Ordering::Acquire) {
+                return None;
+            }
+            self.enabled_frame = self.render.output_enabled.load(Ordering::Acquire);
+            self.muted_seek_frame = !self.enabled_frame && self.render.pending_terminal_seek();
         }
-        let sample = self.queue.next();
-        if sample.is_some() {
-            self.channel = (self.channel + 1) % self.channels;
+        let sample = if self.enabled_frame {
+            self.source.next()?
+        } else {
+            if self.muted_seek_frame {
+                // Let the renderer stamp the last channel, but keep EQ tails off master and cue.
+                self.source.next()?;
+            }
+            0.0
+        };
+        self.channel += 1;
+        if self.channel == self.channels {
+            self.channel = 0;
         }
-        sample
+        Some(sample)
     }
 }
-impl Source for DeckOutput {
+impl<S: Source> Source for DeckOutput<S> {
     fn current_span_len(&self) -> Option<usize> {
         None
     }
@@ -381,6 +469,8 @@ impl DeckSnapshot {
 }
 
 pub struct DualDeckEngine {
+    tempo_preview: Arc<tempo_preview::PreviewControl>,
+    pub(crate) source_monitor: Arc<crate::source_monitor::Feed>,
     sampler: Arc<crate::sampler::Shared>,
     decks: [RefCell<Deck>; 2],
     levels: Cell<MixerLevels>,
@@ -390,10 +480,10 @@ pub struct DualDeckEngine {
     eq_settings: [Cell<crate::mixer_dsp::EqSettings>; 2],
     eq_controls: [Arc<crate::mixer_dsp::EqControl>; 2],
     clip_latches: [Arc<crate::peak_meter::ClipLatch>; 2],
-    mixers: [Mixer; 2],
+    deck_inputs: [deck_input::Input<InstalledDeckSource>; 2],
     fx_settings: [[Cell<crate::fx_chain::Slot>; 3]; 2],
     fx_controls: [[Arc<crate::fx_chain::Control>; 3]; 2],
-    _fx_rings: [[Arc<crate::delay_fx::DelayRing>; 3]; 2],
+    _fx_memory: [[crate::delay_fx::DelayMemory; 3]; 2],
     output_channels: u16,
     output_rate: u32,
     output_routing: Arc<crate::output_routing::RoutingControl>,
@@ -411,7 +501,11 @@ pub struct DualDeckEngine {
 impl Drop for DualDeckEngine {
     fn drop(&mut self) {
         for deck in &mut self.decks {
-            deck.get_mut().sink.stop();
+            let deck = deck.get_mut();
+            if let Some(render) = &deck.render {
+                render.cancel_trigger();
+                render.stopped.store(true, Ordering::Release);
+            }
         }
         drop(self._stream.take());
     }
@@ -557,20 +651,12 @@ impl DualDeckEngine {
                 && output_channels <= crate::mixer_dsp::MAX_CHANNELS
                 && output_rate > 0
         );
-        // Both deck queues enter one fixed-format bus before the device/injected mixer.
-        let (deck_mixer, deck_output) = rodio::mixer::mixer(output_channels, output_rate);
         let sampler = crate::sampler::Shared::new(output_rate)?;
-        deck_mixer.add(crate::sampler::Bus::new(
-            Arc::clone(&sampler),
-            output_channels,
-            output_rate,
-        ));
+        let sampler_bus =
+            crate::sampler::Bus::new(Arc::clone(&sampler), output_channels, output_rate);
         let mix_controls: [Arc<crate::cue_bus::DeckMixControl>; 2] =
             std::array::from_fn(|_| crate::cue_bus::DeckMixControl::new());
-        let (bus, render_clock) = crate::render_bus::RenderBus::new(deck_output);
-        // Meter only the logical post-fader master, before physical output routing.
-        let (bus, output_routing) =
-            crate::output_routing::PairRouter::new(bus.with_cue_meter(mix_controls.clone()));
+        let source_monitor = crate::source_monitor::Feed::new();
         let fx_controls: [[Arc<crate::fx_chain::Control>; 3]; 2] = std::array::from_fn(|_| {
             std::array::from_fn(|_| crate::fx_chain::Control::new(output_rate))
         });
@@ -578,36 +664,39 @@ impl DualDeckEngine {
             crate::fx_chain::rings(output_rate, output_channels)?,
             crate::fx_chain::rings(output_rate, output_channels)?,
         ];
-        let mixers = std::array::from_fn(|index| {
-            let (input, output) = rodio::mixer::mixer(output_channels, output_rate);
-            let a = crate::fx_chain::source(
-                output,
-                &fx_controls[index][0],
-                Arc::clone(&fx_rings[index][0]),
-                mix_controls.clone(),
-                index,
-            );
-            let b = crate::fx_chain::source(
-                a,
-                &fx_controls[index][1],
-                Arc::clone(&fx_rings[index][1]),
-                mix_controls.clone(),
-                index,
-            );
-            deck_mixer.add(crate::fx_chain::source(
-                b,
-                &fx_controls[index][2],
-                Arc::clone(&fx_rings[index][2]),
-                mix_controls.clone(),
-                index,
-            ));
-            input
+        let fx_memory = fx_rings.each_ref().map(|deck| {
+            deck.each_ref()
+                .map(crate::delay_fx::DelayRing::retain_memory)
         });
-        mixer.add(bus);
-        // Ungeladene Decks benötigen keine leere Rodio-Queue im Audio-Mixer.
-        // Beim Laden installiert replace_source die echte, dauerhaft stille EOF-Quelle.
+        let [rings_a, rings_b] = fx_rings;
+        let [(input_a, output_a), (input_b, output_b)] =
+            [(0, rings_a), (1, rings_b)].map(|(index, rings)| {
+                let (input, output) = deck_input::channel(output_channels, output_rate);
+                let output = crate::fx_chain::chain(
+                    output,
+                    &fx_controls[index],
+                    rings,
+                    mix_controls.clone(),
+                    index,
+                );
+                (input, Box::new(output) as Box<dyn Source + Send>)
+            });
+        let deck_output = fixed_mix::FixedDeckMix::new(sampler_bus, [output_a, output_b]);
+        let (bus, render_clock) = crate::render_bus::RenderBus::new(deck_output);
+        // Meter only the logical post-fader master, before physical output routing.
+        let (bus, output_routing) =
+            crate::output_routing::PairRouter::new(crate::source_monitor::Tap::new(
+                bus.with_cue_meter(mix_controls.clone()),
+                Arc::clone(&source_monitor),
+                crate::source_monitor::MASTER,
+            ));
+        let (preview_renderer, tempo_preview) = tempo_preview::PreviewRenderer::new();
+        mixer.add(bus.with_tempo_preview(preview_renderer));
+        // Empty decks add no source. At EOF an installed renderer remains available for seeking.
         let decks = std::array::from_fn(|_| RefCell::new(Deck::empty()));
         let engine = Self {
+            tempo_preview,
+            source_monitor,
             sampler,
             decks,
             levels: Cell::new(MixerLevels::default()),
@@ -621,12 +710,12 @@ impl DualDeckEngine {
             clip_latches: std::array::from_fn(
                 |_| Arc::new(crate::peak_meter::ClipLatch::default()),
             ),
-            mixers,
+            deck_inputs: [input_a, input_b],
             fx_settings: std::array::from_fn(|_| {
                 std::array::from_fn(|_| Cell::new(crate::fx_chain::Slot::default()))
             }),
             fx_controls,
-            _fx_rings: fx_rings,
+            _fx_memory: fx_memory,
             output_channels,
             output_rate,
             output_routing,
@@ -642,13 +731,16 @@ impl DualDeckEngine {
         engine.set_levels(MixerLevels::default());
         Ok(engine)
     }
-    /// Control-plane reclamation after the source queue acknowledges destruction.
+    /// Destroy returned renderers before releasing their retained PCM and channel meters.
     pub fn collect_retired(&self) {
+        for input in &self.deck_inputs {
+            input.collect();
+        }
         self.retired
             .borrow_mut()
             .retain(|track| !track.released.load(Ordering::Acquire));
     }
-    /// Install prepared tracks; same-track commands reuse the existing renderer and Sink.
+    /// Returns the tempo factor used to prepare the installed Keylock audio.
     pub fn keylock_factor(&self, id: DeckId) -> Option<f64> {
         self.decks[id.index()]
             .borrow()
@@ -730,6 +822,9 @@ impl DualDeckEngine {
         {
             return Err("Disable headphone cue before loading multichannel audio".into());
         }
+        if track.samples.channels() > 2 {
+            self.stop_tempo_preview();
+        }
         let source = track.samples.clone();
         self.replace_source(id, track, source, Duration::ZERO, false, None);
         Ok(())
@@ -807,13 +902,11 @@ impl DualDeckEngine {
         let mut deck = self.decks[target.index()].borrow_mut();
         deck.speed = Some(speed);
         deck.base_factor = snapshot.requested_speed;
-        deck.render
-            .as_ref()
-            .expect("Installed double renderer")
-            .publish(speed.output_rate().get(), snapshot.playing, None, None);
-        if snapshot.playing {
-            deck.sink.play();
-        }
+        let render = deck.render.as_ref().expect("Installed double renderer");
+        render.publish(speed.output_rate().get(), snapshot.playing, None, None);
+        render
+            .output_enabled
+            .store(snapshot.playing, Ordering::Release);
         Ok(())
     }
     pub fn eject(&self, id: DeckId) -> bool {
@@ -826,9 +919,9 @@ impl DualDeckEngine {
                 render.cancel_trigger();
                 render.stopped.store(true, Ordering::Release);
             }
-            deck.sink.stop();
             std::mem::replace(&mut *deck, Deck::empty())
         };
+        self.deck_inputs[id.index()].replace(None);
         if let (Some(track), Some(released)) = (old.track.take(), old.source_retired.take()) {
             self.retired.borrow_mut().push(RetiredTrack {
                 _track: track,
@@ -904,17 +997,14 @@ impl DualDeckEngine {
                             frame: source.cursor_frame(),
                         }),
                     );
-                    if playing {
-                        deck.sink.play();
-                    } else {
-                        deck.sink.pause();
-                    }
+                    render.output_enabled.store(playing, Ordering::Release);
                     deck.grid = grid;
                     deck.loop_active = false;
                     return;
                 }
             }
             if let Some(render) = &deck.render {
+                render.cancel_trigger();
                 render.stopped.store(true, Ordering::Release);
             }
         }
@@ -952,37 +1042,40 @@ impl DualDeckEngine {
             )
         }));
         let source_retired = Arc::new(AtomicBool::new(false));
-        let (sink, queue) = Sink::new();
-        let output = DeckOutput {
-            queue,
+        let meter =
+            crate::peak_meter::ChannelMeter::new(Arc::clone(&self.clip_latches[id.index()]));
+        let source = crate::cue_bus::CueSend::new(
+            crate::source_monitor::Tap::new(
+                crate::peak_meter::Metered::new(
+                    crate::mixer_dsp::EqSource::new(
+                        renderer,
+                        Arc::clone(&self.eq_controls[id.index()]),
+                    ),
+                    Arc::clone(&meter),
+                ),
+                Arc::clone(&self.source_monitor),
+                if id == DeckId::A {
+                    crate::source_monitor::DECK_A
+                } else {
+                    crate::source_monitor::DECK_B
+                },
+            ),
+            Arc::clone(&self.mix_controls[id.index()]),
+        );
+        self.deck_inputs[id.index()].replace(Some(DeckOutput {
+            source,
             render: Arc::clone(&render),
+            enabled_frame: false,
+            muted_seek_frame: false,
             channel: 0,
             channels: self.output_channels,
             sample_rate: self.output_rate,
             _retirement: SourceRetirement(Arc::clone(&source_retired)),
-        };
-        sink.pause();
-        let meter =
-            crate::peak_meter::ChannelMeter::new(Arc::clone(&self.clip_latches[id.index()]));
-        sink.append(crate::cue_bus::CueSend::new(
-            crate::peak_meter::Metered::new(
-                crate::mixer_dsp::EqSource::new(
-                    renderer,
-                    Arc::clone(&self.eq_controls[id.index()]),
-                ),
-                Arc::clone(&meter),
-            ),
-            Arc::clone(&self.mix_controls[id.index()]),
-        ));
-        if playing {
-            sink.play();
-        }
-        self.mixers[id.index()].add(output);
+        }));
 
         let mut old = std::mem::replace(
             &mut *self.decks[id.index()].borrow_mut(),
             Deck {
-                sink,
                 meter: Some(meter),
                 source_retired: Some(source_retired),
                 render: Some(render),
@@ -997,7 +1090,7 @@ impl DualDeckEngine {
                 grid,
             },
         );
-        // Transfer ownership before old Sink::drop signals the audio path to stop.
+        // Keep the old PCM and meter alive until its output acknowledges retirement.
         if let (Some(track), Some(released)) = (old.track.take(), old.source_retired.take()) {
             self.retired.borrow_mut().push(RetiredTrack {
                 _track: track,
@@ -1023,11 +1116,9 @@ impl DualDeckEngine {
             return Ok(());
         }
         render.scratch_touch(held);
-        if held || !render.is_paused() {
-            deck.sink.play();
-        } else {
-            deck.sink.pause();
-        }
+        render
+            .output_enabled
+            .store(held || !render.is_paused(), Ordering::Release);
         Ok(())
     }
     /// Relative jog sensitivity: five milliseconds of source time per MIDI unit.
@@ -1107,7 +1198,7 @@ impl DualDeckEngine {
         Ok(())
     }
     /// Reverse the audible head while the normal source timeline advances, including loops.
-    /// Release only changes an atomic command; it never seeks or restarts a paused sink.
+    /// Release only changes an atomic command; it never seeks or restarts a paused deck.
     pub fn censor(&self, id: DeckId, held: bool) -> Result<(), String> {
         let deck = self.decks[id.index()].borrow();
         let Some(render) = deck.render.as_ref() else {
@@ -1183,6 +1274,78 @@ impl DualDeckEngine {
             render.cancel_trigger();
         }
     }
+
+    fn section_jump_target(
+        &self,
+        id: DeckId,
+        target: Duration,
+    ) -> Result<(Arc<RenderControl>, usize, usize), String> {
+        if self.output_failed() {
+            return Err("Audio output unavailable".into());
+        }
+        let deck = self.decks[id.index()].borrow();
+        let track = deck
+            .track
+            .as_ref()
+            .ok_or("Load a track before scheduling a section jump")?;
+        let render = deck
+            .render
+            .as_ref()
+            .ok_or("Missing section-jump renderer")?;
+        if !deck.playing() || deck.loop_active || deck.nudge != 0 || deck.sync_factor != 1. {
+            return Err(
+                "Play the deck and release loop, nudge and Sync before a section jump".into(),
+            );
+        }
+        if render.scratching() || render.censoring() {
+            return Err("Release platter, DVS or Censor before scheduling a section jump".into());
+        }
+        let grid = deck
+            .grid
+            .as_ref()
+            .ok_or("Save a beatgrid before scheduling a section jump")?;
+        let rate = track.samples.sample_rate();
+        let at = grid.next_bar_frame(render.position(), rate)?;
+        let to = frame_at(target, rate);
+        let frames = track.samples.frames();
+        let active_rate = deck
+            .speed
+            .ok_or("Missing deck playback rate")?
+            .output_rate()
+            .get();
+        let fade = u64::from(crate::deck_render::section_jump_fade_frames(
+            self.output_rate,
+        ));
+        let tail = (fade * u64::from(active_rate)).div_ceil(u64::from(self.output_rate)) as usize;
+        if target >= track.duration()
+            || frames.saturating_sub(at) < tail
+            || frames.saturating_sub(to) < tail
+        {
+            return Err(
+                "Next bar or target is too close to the end for a section crossfade".into(),
+            );
+        }
+        Ok((Arc::clone(render), at, to))
+    }
+
+    pub(crate) fn can_schedule_section_jump(
+        &self,
+        id: DeckId,
+        target: Duration,
+    ) -> Result<(), String> {
+        self.section_jump_target(id, target).map(|_| ())
+    }
+
+    pub(crate) fn schedule_section_jump(
+        &self,
+        id: DeckId,
+        target: Duration,
+    ) -> Result<PendingSectionJump, String> {
+        let (render, at, to) = self.section_jump_target(id, target)?;
+        let serial = render.schedule_section_jump(at, to);
+        Ok(PendingSectionJump { render, serial })
+    }
+
     pub fn schedule_cue(
         &self,
         id: DeckId,
@@ -1432,7 +1595,101 @@ impl DualDeckEngine {
         self.output_routing.pair()
     }
     pub fn set_output_pair(&self, pair: u16) -> Result<(), String> {
-        self.output_routing.set_pair(pair)
+        self.output_routing.set_pair(pair)?;
+        if pair == 1 {
+            self.stop_tempo_preview();
+        }
+        Ok(())
+    }
+
+    /// The preview uses physical outputs 3/4 only while they are available to headphones.
+    pub(crate) fn preview_route_available(&self) -> bool {
+        !self.output_failed()
+            && self.output_channels >= 4
+            && self.output_pair() != 1
+            && self.decks.iter().all(|d| {
+                d.borrow()
+                    .track
+                    .as_ref()
+                    .is_none_or(|t| t.samples.channels() <= 2)
+            })
+    }
+
+    /// Restart the selected excerpt at its original speed without issuing a deck command.
+    pub(crate) fn play_tempo_preview(
+        &self,
+        clip: &PreviewClip,
+        grid: crate::beatgrid::BeatGrid,
+    ) -> Result<(), String> {
+        if !self.preview_route_available() {
+            return Err(
+                "Visual comparison only: a separate headphone pair (3/4) is required.".into(),
+            );
+        }
+        let voice = tempo_preview::Voice::new(clip, grid, self.output_rate)?;
+        self.tempo_preview.start(voice);
+        Ok(())
+    }
+
+    /// Loop an excerpt with a concert-pitch tonic or triad exclusively on the headphone pair.
+    pub(crate) fn play_key_reference(
+        &self,
+        clip: &PreviewClip,
+        key: drdjpro_ui_spike::analysis::keys::CamelotKey,
+        triad: bool,
+    ) -> Result<(), String> {
+        if !self.preview_route_available() {
+            return Err("Key preview requires a separate headphone pair (3/4).".into());
+        }
+        let voice = key_reference::ReferenceVoice::new(clip, key, triad, self.output_rate)?;
+        self.tempo_preview.start_reference(voice);
+        Ok(())
+    }
+
+    /// Play the excerpt once on the independent headphone pair, leaving all sampler pads intact.
+    pub(crate) fn play_sample_preview(&self, clip: &PreviewClip) -> Result<(), String> {
+        if !self.preview_route_available() {
+            return Err("Sample preview requires a separate headphone pair (3/4).".into());
+        }
+        let excerpt = tempo_preview::Excerpt::new(clip, self.output_rate)?;
+        self.tempo_preview.start_sample(excerpt);
+        Ok(())
+    }
+
+    pub(crate) fn preview_epoch(&self) -> u64 {
+        self.tempo_preview.epoch()
+    }
+
+    /// Play synchronized original and accompaniment stems through the headphone bus.
+    pub(crate) fn start_scene_loop(
+        &self,
+        original: Arc<Vec<f32>>,
+        layers: [Arc<Vec<f32>>; 2],
+        rate: u32,
+        variant: u8,
+    ) -> Result<SceneLoopControl, String> {
+        if !self.preview_route_available() {
+            return Err("Choose a separate headphone pair (3/4) first.".into());
+        }
+        let (voice, control) =
+            scene_loop::Voice::new(original, layers, rate, self.output_rate, variant)?;
+        self.tempo_preview.start_scene(voice);
+        Ok(control)
+    }
+    pub(crate) fn audition_phrase(
+        &self,
+        pattern: &crate::sampler::phrase::Pattern,
+        bars: u32,
+    ) -> Result<(), String> {
+        if !self.preview_route_available() {
+            return Err("Select a separate headphone output first.".into());
+        }
+        let voice = crate::sampler::phrase::Audition::new(self.sampler(), pattern, bars)?;
+        self.tempo_preview.start_phrase(voice);
+        Ok(())
+    }
+    pub(crate) fn stop_tempo_preview(&self) {
+        self.tempo_preview.stop();
     }
     pub fn rendered_frames(&self) -> u64 {
         self.render_clock.completed.load(Ordering::Acquire)
@@ -1867,7 +2124,7 @@ impl DualDeckEngine {
                 },
                 None,
             );
-            deck.sink.play();
+            render.output_enabled.store(true, Ordering::Release);
         }
     }
     pub fn pause(&self, id: DeckId) {
@@ -1875,7 +2132,8 @@ impl DualDeckEngine {
         if let Some(track) = &deck.track {
             let speed = PlaybackSpeed::new(deck.base_factor, track.samples.sample_rate())
                 .expect("Validated base rate");
-            deck.render.as_ref().unwrap().publish(
+            let render = deck.render.as_ref().unwrap();
+            render.publish(
                 speed.output_rate().get(),
                 false,
                 if deck.loop_active {
@@ -1885,11 +2143,11 @@ impl DualDeckEngine {
                 },
                 None,
             );
+            render.output_enabled.store(false, Ordering::Release);
             deck.speed = Some(speed);
             deck.nudge = 0;
             deck.sync_factor = 1.;
         }
-        deck.sink.pause();
     }
     pub fn cue(&self, id: DeckId) {
         let (track, grid) = {
@@ -2188,7 +2446,146 @@ pub fn mix_files(a: &Path, b: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 #[cfg(test)]
+pub(crate) use tests::render_bench::measure as measure_two_decks;
+
+#[cfg(test)]
 mod tests {
+    #[test]
+    fn direct_deck_gate_freezes_source_and_applies_transport_at_frame_boundaries() {
+        let pulls = Cell::new(0);
+        let source =
+            rodio::buffer::SamplesBuffer::new(4, 48_000, vec![1., 2., 3., 4., 5., 6., 7., 8.])
+                .periodic_access(Duration::ZERO, |_| pulls.set(pulls.get() + 1));
+        let render = RenderControl::new(
+            48_000,
+            false,
+            None,
+            SeekFrame {
+                time: Duration::ZERO,
+                frame: 0,
+            },
+            RenderFormat {
+                source_rate: 48_000,
+                output_rate: 48_000,
+                frames: 2,
+            },
+        );
+        let released = Arc::new(AtomicBool::new(false));
+        let mut output = DeckOutput {
+            source,
+            render: Arc::clone(&render),
+            enabled_frame: false,
+            muted_seek_frame: false,
+            channel: 0,
+            channels: 4,
+            sample_rate: 48_000,
+            _retirement: SourceRetirement(Arc::clone(&released)),
+        };
+        let heap = crate::test_alloc::measured_heap(|| {
+            assert_eq!(output.next(), Some(0.));
+            render.output_enabled.store(true, Ordering::Release);
+            for _ in 0..3 {
+                assert_eq!(output.next(), Some(0.));
+            }
+            assert_eq!(pulls.get(), 0);
+
+            assert_eq!(output.next(), Some(1.));
+            render.output_enabled.store(false, Ordering::Release);
+            for value in [2., 3., 4.] {
+                assert_eq!(output.next(), Some(value));
+            }
+            for _ in 0..4 {
+                assert_eq!(output.next(), Some(0.));
+            }
+            assert_eq!(pulls.get(), 4);
+
+            render.output_enabled.store(true, Ordering::Release);
+            assert_eq!(output.next(), Some(5.));
+            render.output_enabled.store(false, Ordering::Release);
+            render.stopped.store(true, Ordering::Release);
+            for value in [6., 7., 8.] {
+                assert_eq!(output.next(), Some(value));
+            }
+            assert_eq!(output.next(), None);
+        });
+        assert_eq!((heap.allocations, heap.deallocations), (0, 0));
+        assert_eq!(pulls.get(), 8);
+        assert!(!released.load(Ordering::Acquire));
+        drop(output);
+        assert!(released.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn direct_deck_gate_resume_matches_continuous_filtered_audio_and_preserves_meter() {
+        let pcm: Vec<i16> = (0..1600)
+            .map(|i| ((i * 5791) % 24577 - 12288) as i16)
+            .collect();
+        let audio = crate::test_support::wav_samples(&pcm, 8_000, 1);
+        let render = |pause: bool| {
+            let (mixer, mut output) = rodio::mixer::mixer(4, 8_000);
+            let engine = DualDeckEngine::from_mixer(mixer, 4, 8_000);
+            engine
+                .set_eq(
+                    DeckId::A,
+                    crate::mixer_dsp::EqSettings {
+                        low: 5.0,
+                        filter: -0.6,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            engine.load_a(audio.path()).unwrap();
+            engine.play(DeckId::A);
+            output.by_ref().take(420 * 4).for_each(drop);
+            let before = engine.snapshot(DeckId::A).position;
+            assert!(before > Duration::ZERO);
+            let peak = engine.channel_peak(DeckId::A).unwrap();
+            assert!(peak > 0.0);
+            if pause {
+                engine.pause(DeckId::A);
+                // More than a complete channel-meter window of silent output.
+                for _ in 0..480 * 4 {
+                    assert_eq!(output.next(), Some(0.0));
+                }
+                assert_eq!(engine.snapshot(DeckId::A).position, before);
+                assert_eq!(engine.channel_peak(DeckId::A), Some(peak));
+                engine.play(DeckId::A);
+            }
+            output.take(80 * 4).map(f32::to_bits).collect::<Vec<_>>()
+        };
+        let continuous = render(false);
+        assert_eq!(continuous.len(), 80 * 4);
+        assert!(continuous.windows(2).any(|s| s[0] != s[1]));
+        assert_eq!(render(true), continuous);
+    }
+
+    #[test]
+    fn terminal_seek_mutes_filtered_master_and_headphone_channels() {
+        let (mixer, mut output) = rodio::mixer::mixer(4, 48_000);
+        let engine = DualDeckEngine::from_mixer(mixer, 4, 48_000);
+        let file = wav_file(8192, 4800);
+        engine.load_a(file.path()).unwrap();
+        engine
+            .set_eq(
+                DeckId::A,
+                crate::mixer_dsp::EqSettings {
+                    filter: -0.6,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        engine.set_headphone_cue(DeckId::A, true).unwrap();
+        engine.play(DeckId::A);
+        output.by_ref().take(480 * 4).for_each(drop);
+        for _ in 0..4 {
+            assert!(output.next().unwrap().abs() > 0.01);
+        }
+        engine.seek_percent(DeckId::A, 100.).unwrap();
+        for _ in 0..8 {
+            assert_eq!(output.next(), Some(0.0));
+        }
+    }
+
     #[test]
     fn selected_file_loading_profile() {
         let paths = crate::test_support::benchmark_paths(std::env::var_os("DRDJ_LOAD_BENCH_FILES"));
@@ -3786,24 +4183,54 @@ mod tests {
             output.next();
         }
         assert!(a.rendered_stamp().is_some());
+        let before_end = engine.render_clock.completed.load(Ordering::Acquire);
         engine.seek_percent(DeckId::A, 100.).unwrap();
         assert!(a.rendered_stamp().is_none());
-        for _ in 0..1000 {
-            output.next();
-        }
+        output.next();
+        assert!(a.rendered_stamp().is_none());
+        output.next();
         let end = a.rendered_stamp().unwrap();
         assert_eq!(end.phase_units, 192000 * 48000);
-        assert!(end.output_frame <= engine.render_clock.completed.load(Ordering::Acquire));
-        // Explicit EOF pauses the Sink, so its last real render stamp remains frozen.
+        assert_eq!(end.output_frame, before_end + 1);
+        assert_eq!(
+            end.output_frame,
+            engine.render_clock.completed.load(Ordering::Acquire)
+        );
+        // The gate freezes the last real render stamp when transport is paused at the end.
         for _ in 0..1000 {
             output.next();
         }
         assert_eq!(a.rendered_stamp().unwrap(), end);
+        // A second EOF seek arriving halfway through a frame invalidates the first.
+        let before_repeat = engine.render_clock.completed.load(Ordering::Acquire);
+        engine.seek_percent(DeckId::A, 100.).unwrap();
+        output.next();
+        engine.seek_percent(DeckId::A, 100.).unwrap();
+        output.next();
+        assert!(a.rendered_stamp().is_none());
+        output.next();
+        assert!(a.rendered_stamp().is_none());
+        output.next();
+        let repeated = a.rendered_stamp().unwrap();
+        assert_eq!(repeated.phase_units, end.phase_units);
+        assert_eq!(repeated.output_frame, before_repeat + 2);
         engine.play(DeckId::A);
         for _ in 0..1000 {
             output.next();
         }
-        assert!(a.rendered_stamp().unwrap().output_frame > end.output_frame);
+        let restarted = a.rendered_stamp().unwrap();
+        assert!(restarted.output_frame > repeated.output_frame);
+        assert!(restarted.phase_units < sought.phase_units);
+        // A newer playing seek wins before the pending terminal frame is rendered.
+        engine.seek_percent(DeckId::A, 100.).unwrap();
+        engine.play(DeckId::A);
+        engine
+            .seek_position(DeckId::A, Duration::from_secs(1))
+            .unwrap();
+        output.next();
+        assert!(a.rendered_stamp().is_none());
+        output.next();
+        assert!((48000 * 48000..end.phase_units).contains(&a.rendered_stamp().unwrap().phase_units));
         engine.pause(DeckId::A);
         engine.load_a(file.path()).unwrap();
         assert!(
@@ -3876,7 +4303,7 @@ mod tests {
         let b = engine.snapshot(DeckId::B).position;
         assert_eq!(a, b);
         engine.pause(DeckId::A);
-        // Sink pause is a Rodio control callback; settle its existing 5ms control tick.
+        // Check the paused position across successive output windows.
         for _ in 0..1000 {
             output.next();
         }
@@ -4166,7 +4593,7 @@ mod tests {
             for _ in 0..2000 {
                 output.next();
             }
-            // Keep the output graph alive until wait returns; a Sink EOF wait would time out.
+            // Keep the output graph alive until wait returns; waiting for retirement would time out.
             let completed = wait.recv_timeout(Duration::from_secs(5)).is_ok();
             if completed {
                 Some(output)
@@ -4181,7 +4608,15 @@ mod tests {
             let state = engine.snapshot(id);
             assert_eq!(state.position, state.duration);
             assert!(!state.playing);
-            assert!(!engine.decks[id.index()].borrow().sink.empty());
+            let deck = engine.decks[id.index()].borrow();
+            assert!(
+                !deck
+                    .source_retired
+                    .as_ref()
+                    .unwrap()
+                    .load(Ordering::Acquire),
+                "the output graph must still own the renderer at EOF"
+            );
         }
         done.send(()).unwrap();
         let output = audio.join().unwrap();
@@ -4343,7 +4778,7 @@ mod tests {
                 ));
                 assert!(
                     engine.retired.borrow().is_empty(),
-                    "rate gestures must not replace source/sink"
+                    "rate gestures must not replace the source"
                 );
             }
             engine.set_nudge(DeckId::A, 0).unwrap();
@@ -4361,11 +4796,25 @@ mod tests {
             let storage = track.samples.storage_weak();
             engine.install(DeckId::A, track);
             let meter_storage = Arc::downgrade(engine.decks[0].borrow().meter.as_ref().unwrap());
+            let released = Arc::clone(engine.decks[0].borrow().source_retired.as_ref().unwrap());
             engine.play(DeckId::A);
             for _ in 0..warmup {
                 output.next();
             }
             engine.load_a(next.path()).unwrap();
+            if warmup == 0 {
+                // No renderer took the first installation. Superseding it on the control thread
+                // destroys its source immediately, then collection releases the retained owners.
+                assert!(released.load(Ordering::Acquire));
+                assert_eq!(storage.strong_count(), 1);
+                assert_eq!(meter_storage.strong_count(), 1);
+                engine.collect_retired();
+                assert!(engine.retired.borrow().is_empty());
+                assert_eq!(storage.strong_count(), 0);
+                assert_eq!(meter_storage.strong_count(), 0);
+                continue;
+            }
+            assert!(!released.load(Ordering::Acquire));
             engine.collect_retired();
             assert_eq!(engine.retired.borrow().len(), 1);
             assert!(storage.strong_count() >= 2);
@@ -4397,6 +4846,28 @@ mod tests {
             assert_eq!(meter_storage.strong_count(), 0);
             assert!(engine.retired.borrow().is_empty());
         }
+    }
+    #[test]
+    fn injected_output_outlives_engine_and_releases_the_last_deck_at_shutdown() {
+        let (mixer, mut output) = rodio::mixer::mixer(2, 48_000);
+        let engine = DualDeckEngine::from_mixer(mixer, 2, 48_000);
+        let file = wav_file(8192, 4800);
+        let track = PreparedTrack::open(file.path()).unwrap();
+        let storage = track.samples.storage_weak();
+        engine.install(DeckId::A, track);
+        engine.play(DeckId::A);
+        assert_eq!(output.next(), Some(0.125));
+        drop(engine);
+        assert_eq!(output.next(), Some(0.125));
+        let heap = crate::test_alloc::measured_heap(|| {
+            for _ in 0..8 {
+                assert_eq!(output.next(), Some(0.));
+            }
+        });
+        assert_eq!((heap.allocations, heap.deallocations), (0, 0));
+        assert_ne!(storage.strong_count(), 0);
+        drop(output);
+        assert_eq!(storage.strong_count(), 0);
     }
     #[test]
     fn nudge_release_tracks_latest_base_and_transport_cancels_without_state_loss() {
@@ -4660,8 +5131,7 @@ mod tests {
             let first_signal = left.iter().position(|sample| sample.abs() > 1e-5).unwrap();
             let signal = &left[first_signal..];
             let expected_source_time = signal.len() as f64 / 48000. * effective;
-            // Sink publishes its counter every 5 ms; compare source time after measured
-            // queue lead-in, allowing that control tick and two source-frame roundings.
+            // Measure from the first audible sample to exclude any lead-in.
             let position = engine.snapshot(DeckId::A).position.as_secs_f64();
             assert!(
                 (position - expected_source_time).abs() <= 0.005 * effective + 2. / f64::from(base),
@@ -5217,7 +5687,7 @@ mod tests {
         }
         assert!((79.0..=81.0).contains(&engine.snapshot(DeckId::A).percent()));
         engine.seek_percent(DeckId::A, 25.0).unwrap();
-        // Allow old sink controls to settle before inspecting the replacement source.
+        // Check that the chosen passage continues to render after the seek.
         output.by_ref().take(1000).for_each(drop);
         let rendered: Vec<_> = output.by_ref().take(1000).collect();
         for frame in rendered.as_chunks::<2>().0 {
@@ -5315,7 +5785,18 @@ mod tests {
     }
 
     mod ai_provider_performance;
-    mod render_bench;
+    mod chord_performance;
+    mod clip_check_audio;
+    mod gig_performance;
+    mod import_review_performance;
+    mod key_reference;
+    mod metadata_diagnosis_performance;
+    mod preparation_performance;
+    pub(super) mod render_bench;
+    mod sample_preview;
+    mod tempo_preview;
+    mod timeline_performance;
+    mod video_scene_performance;
 
     fn compare_render_load(mut command: std::process::Command, unit: &str) {
         use std::process::Child;

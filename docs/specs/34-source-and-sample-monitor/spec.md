@@ -1,6 +1,6 @@
 # Spec 34 – Tonartmonitor und Sample-Stimmung
 
-**Stand:** Planung vom 23. November 2026. Die Abnahme des Monitors und der Pad-Stimmung ist offen. Der [Umsetzungsplan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md) führt beide als getrennte Arbeitspakete.
+**Stand 24. November 2026.** Interner Quellenmonitor und Sample-Stimmung sind im Feature-Branch angeschlossen. Den Monitor über **MON → Source monitor** öffnen. Ein einzelnes Pad im Sampler unter **Pad tools** analysieren und über die getrennte Kopfhörerroute mit dem Referenzton vergleichen. Testergebnisse, Messbedingungen und offene Gegenproben stehen im [Prüfbericht zu den 35 Funktionen](../MUSIKVORBEREITUNG_ABSCHLUSSPRUEFUNG.md). [Umsetzungsplan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md)
 
 ## Ziel und Bestand
 

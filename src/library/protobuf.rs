@@ -87,6 +87,7 @@ impl From<&BeatGrid> for BeatGridMessage {
                 })
                 .collect(),
             points: Vec::new(),
+            locked: grid.is_locked().then_some(true),
         }
     }
 }
@@ -121,7 +122,7 @@ impl TryFrom<BeatGridMessage> for BeatGrid {
         for m in value.warp_markers {
             grid = grid.with_warp_marker(m.beat, Duration::from_nanos(m.position_ns))?;
         }
-        Ok(grid)
+        Ok(grid.with_locked(value.locked.unwrap_or(false)))
     }
 }
 
@@ -170,6 +171,8 @@ impl From<&Track> for NativeTrackMessage {
             available: track.available,
             metadata: NativeMetadataMessage {
                 prefer_imported_tags: metadata.prefer_imported_tags.then_some(true),
+                confirmed_key: metadata.music_labels.key().map(|key| key.to_string()),
+                dj_energy: metadata.music_labels.energy().map(u32::from),
                 title: metadata.title.clone(),
                 artist: metadata.artist.clone(),
                 album: metadata.album.clone(),
@@ -216,6 +219,8 @@ impl From<Track> for NativeTrackMessage {
             grid: track.grid.as_ref().map(Into::into),
             metadata: NativeMetadataMessage {
                 prefer_imported_tags: m.prefer_imported_tags.then_some(true),
+                confirmed_key: m.music_labels.key().map(|key| key.to_string()),
+                dj_energy: m.music_labels.energy().map(u32::from),
                 title: m.title,
                 artist: m.artist,
                 album: m.album,
@@ -252,6 +257,10 @@ impl TryFrom<NativeTrackMessage> for Track {
         }
         let m = value.metadata;
         let metadata = crate::track_metadata::TrackMetadata {
+            music_labels: crate::track_metadata::MusicLabels::from_stored(
+                m.confirmed_key.as_deref(),
+                m.dj_energy,
+            )?,
             prefer_imported_tags: m.prefer_imported_tags.unwrap_or(false),
             title: m.title,
             artist: m.artist,
@@ -352,6 +361,7 @@ mod tests {
         track.metadata.duration_exact = true;
         track.metadata.scanned = true;
         track.metadata.prefer_imported_tags = true;
+        track.metadata.music_labels = crate::track_metadata::MusicLabels::parse("3B", "8").unwrap();
         track.metadata.analysis = Some(crate::audio_analyzer::TrackAnalysisResult {
             beat_anchor_ms: Some(0),
             analyzed_ms: Some(45000),
@@ -373,7 +383,8 @@ mod tests {
                 .with_tempo_change(8, 124.987654321)
                 .unwrap()
                 .with_warp_marker(10, Duration::from_secs(5))
-                .unwrap(),
+                .unwrap()
+                .with_locked(true),
         );
         track
             .hot_cues
@@ -424,12 +435,26 @@ mod tests {
         absent.metadata.duration_exact = false;
         absent.metadata.error = None;
         absent.metadata.analysis = None;
+        absent.metadata.confirmed_key = None;
+        absent.metadata.dj_energy = None;
         let restored = Track::try_from(absent.clone()).unwrap();
         assert_eq!(NativeTrackMessage::from(restored), absent);
     }
     #[test]
     fn malformed_snapshots_do_not_silently_overwrite_native_slots_or_grid_changes() {
         let original = NativeTrackMessage::from(rich_track());
+        let mut invalid = original.clone();
+        invalid.metadata.confirmed_key = Some("13B".into());
+        assert!(Track::try_from(invalid)
+            .err()
+            .unwrap()
+            .contains("confirmed_key"));
+        let mut invalid = original.clone();
+        invalid.metadata.dj_energy = Some(11);
+        assert!(Track::try_from(invalid)
+            .err()
+            .unwrap()
+            .contains("dj_energy"));
         let mut duplicate = original.clone();
         duplicate.hot_cues.push(duplicate.hot_cues[0].clone());
         assert!(Track::try_from(duplicate)

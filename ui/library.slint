@@ -1,7 +1,14 @@
 // Generated with the full local GUI input; input handlers are retained.
 import { Button, Slider, SpinBox, LineEdit, ListView, ComboBox, CheckBox } from "std-widgets.slint";
-import { DjTheme, DeckSlotData, LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, LibraryRow, TableColumn, DeckView, SamplerRow } from "theme.slint";
+import { DjTheme, DeckSlotData, LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, TempoComparisonView, CoverLabelEditor, LibraryRow, TableColumn, DeckView, SamplerRow } from "theme.slint";
 import { LibraryButton } from "controls.slint";
+import { ImportReviewRow, ImportReviewPanel } from "import-review.slint";
+import { MetadataDiagnosisView, MetadataDiagnosisPanel } from "metadata-diagnosis.slint";
+import { GigRuleView, GigPlanningPanel } from "gig-planning.slint";
+import { ChordPairPanel, ChordPairSettings, ChordPairRow } from "chord-pair.slint";
+import { LocalKeysPanel } from "local-keys.slint";
+import { ClipCheckPanel } from "clip-check.slint";
+import { CueTrimPanel } from "cue-trim.slint";
 
 export component CratePanel inherits Rectangle {
     in property <bool> managing;
@@ -23,6 +30,7 @@ export component CratePanel inherits Rectangle {
     callback new-crate(); callback new-smart-crate(); callback new-subcrate(); callback rename-crate(); callback delete-crate();
     callback save-name(); callback cancel-dialog(); callback confirm-delete();
     callback add-track(); callback remove-track();
+    callback open-crate-order();
     background: #111111; border-color: #333333; border-width: 1px;
     VerticalLayout {
         padding: 3px; spacing: 2px;
@@ -43,6 +51,10 @@ export component CratePanel inherits Rectangle {
                 }
                 TouchArea { enabled: !root.busy; clicked => { root.select-crate(entry.id); } }
             }
+        }
+        if root.selection > 0 && !root.selected-smart : LibraryButton {
+            text: "Arrange setlist"; accessible-label: "Preview and arrange the selected crate";
+            enabled: !root.busy; clicked => { root.open-crate-order(); }
         }
         if root.managing : HorizontalLayout {
             LibraryButton { text: "+"; accessible-label: "New crate"; enabled: !busy; clicked => { root.new-crate(); } }
@@ -74,7 +86,131 @@ export component CratePanel inherits Rectangle {
     }
 }
 
+component CoverBadge inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    width: caption.preferred-width + 4px; height: 11px;
+    background: root.selected ? #00466a : #131820;
+    caption := Text {
+        text: root.label; color: #fff; font-size: 9px; font-weight: 600;
+        width: self.preferred-width; height: self.preferred-height;
+        x: 2px; y: (parent.height - self.height) / 2;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+}
+
+component CoverThumbnail inherits Rectangle {
+    in property <image> artwork;
+    in property <int> track-id;
+    in property <string> key-label;
+    in property <string> energy;
+    in property <bool> selected;
+    in property <bool> overlay;
+    border-width: root.selected ? 1px : 0px;
+    border-color: #63c8ff;
+    if root.artwork.width == 0 : Text {
+        text: "♪"; color: #c5d4de; font-size: 13px;
+        horizontal-alignment: center; vertical-alignment: top;
+        accessible-role: text; accessible-label: "Track " + root.track-id + " cover placeholder";
+    }
+    Image {
+        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+        source: root.artwork; image-fit: contain;
+        accessible-label: "Track " + root.track-id + " cover art";
+    }
+    if root.overlay && (root.key-label != "" || root.energy != "") : Rectangle {
+        x: 1px; width: parent.width - 2px; height: parent.height;
+        accessible-role: text; accessible-label: "Track " + root.track-id + " cover labels";
+        accessible-description: (root.key-label == "" ? "Key unknown" : "Camelot " + root.key-label)
+            + (root.energy == "" ? ", energy unknown" : ", energy " + root.energy)
+            + (root.selected ? ", selected" : "");
+        if root.key-label != "" : CoverBadge {
+            x: 0px; y: 0px;
+            label: root.key-label; selected: root.selected;
+        }
+        if root.energy != "" : CoverBadge {
+            x: parent.width - self.width; y: parent.height - self.height;
+            label: "E" + root.energy; selected: root.selected;
+        }
+    }
+}
+
+component TempoComparisonPanel inherits VerticalLayout {
+    in property <TempoComparisonView> comparison;
+    callback select-variant(bool);
+    callback apply-comparison();
+    callback toggle-lock();
+    callback cancel-comparison();
+    spacing: 2px;
+    HorizontalLayout {
+        spacing: 3px;
+        LibraryButton {
+            text: root.comparison.slow-label == "" ? "Slower" : root.comparison.slow-label;
+            enabled: root.comparison.slow-label != "";
+            active: self.enabled && !root.comparison.selected-fast;
+            accessible-label: "Slower tempo interpretation";
+            accessible-description: self.text + (self.active ? " (selected)" : "");
+            clicked => { root.select-variant(false); }
+        }
+        LibraryButton {
+            text: root.comparison.fast-label == "" ? "Faster" : root.comparison.fast-label;
+            enabled: root.comparison.fast-label != "";
+            active: self.enabled && root.comparison.selected-fast;
+            accessible-label: "Faster tempo interpretation";
+            accessible-description: self.text + (self.active ? " (selected)" : "");
+            clicked => { root.select-variant(true); }
+        }
+        LibraryButton {
+            text: "Apply grid"; enabled: root.comparison.can-apply;
+            accessible-label: "Apply tempo interpretation";
+            clicked => { root.apply-comparison(); }
+        }
+        LibraryButton {
+            text: root.comparison.locked ? "Unlock grid" : "Lock grid";
+            enabled: root.comparison.can-toggle-lock;
+            accessible-label: "Toggle tempo grid lock"; accessible-description: self.text;
+            clicked => { root.toggle-lock(); }
+        }
+        LibraryButton {
+            text: "Cancel"; accessible-label: "Cancel tempo comparison";
+            clicked => { root.cancel-comparison(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    Rectangle {
+        height: 16px; clip: true; background: #101418;
+        accessible-role: groupbox; accessible-label: "Tempo comparison beat marks";
+        accessible-description: root.comparison.anchor-label;
+        for marker in root.comparison.beats : Rectangle {
+            x: marker.position * (parent.width - self.width);
+            y: parent.height - self.height;
+            width: marker.downbeat ? 3px : 1px;
+            height: marker.downbeat ? parent.height : parent.height / 2;
+            background: marker.downbeat ? #ffbf00 : #91b2bf;
+        }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: root.comparison.anchor-label; color: #eeeeee; font-size: 11px; }
+        Text {
+            text: root.comparison.status; color: #dddddd; font-size: 11px;
+            accessible-role: text; accessible-label: "Tempo comparison status";
+            accessible-description: self.text;
+            min-width: 0px; horizontal-stretch: 1; wrap: word-wrap;
+        }
+    }
+}
+
 export component TrackLibrary inherits Rectangle {
+    in property <bool> import-review-open;
+    in property <bool> import-review-checking;
+    in property <[ImportReviewRow]> import-review-rows;
+    in property <string> import-review-status;
+    out property <bool> import-text-focused: review.text-focused;
+    callback toggle-import-review(int);
+    callback apply-import-review();
+    callback cancel-import-review();
+    callback rescan-import-review();
     in property <int> prep-queue-count;
     callback prep-action(int);
     out property <bool> search-focused: search-input.has-focus;
@@ -96,17 +232,117 @@ export component TrackLibrary inherits Rectangle {
     in property <int> sort-field;
     in property <bool> sort-descending;
     in property <bool> columns-enabled;
+    in property <bool> cover-overlay-enabled;
+    callback toggle-cover-overlay();
+    in-out property <CoverLabelEditor> cover-label-editor;
+    callback open-cover-labels();
+    callback save-cover-labels(int, string, string);
+    callback cancel-cover-labels();
+    in property <bool> reference-route;
+    in property <bool> reference-active;
+    in property <string> reference-status;
+    callback audition-reference(int, string, string, bool);
+    callback stop-reference();
+    callback reset-confirmed-key(int);
     in-out property <length> table-scroll-x;
     property <bool> columns-open;
     callback change-column(int, int);
     callback analyze();
     callback add-phrase-cues();
+    in property <TempoComparisonView> tempo-comparison;
+    callback open-tempo-comparison();
+    in property <MetadataDiagnosisView> metadata-diagnosis;
+    in property <bool> cue-trim-open;
+    in property <bool> cue-trim-busy;
+    in property <bool> cue-trim-route;
+    in property <int> cue-trim-track: -1;
+    in property <[string]> cue-trim-slots;
+    in property <int> cue-trim-slot: -1;
+    in property <int> cue-trim-reference: -2;
+    in property <int> cue-trim-suggested: -1;
+    in property <string> cue-trim-position;
+    in property <string> cue-trim-status;
+    callback open-cue-trim();
+    callback open-set-planning();
+    callback close-cue-trim();
+    callback select-cue-trim-slot(int);
+    callback select-cue-trim-reference(int);
+    callback move-cue-trim(int);
+    callback set-cue-trim-position(string);
+    callback audition-cue-trim();
+    callback stop-cue-trim();
+    callback save-cue-trim();
+    in property <bool> chord-pair-open;
+    in property <bool> chord-pair-busy;
+    in property <bool> chord-pair-route;
+    in property <string> chord-pair-a;
+    in property <string> chord-pair-b;
+    in property <string> chord-pair-status;
+    in property <[ChordPairRow]> chord-pair-rows;
+    in property <int> chord-pair-index: -1;
+    callback open-chord-pair();
+    callback close-chord-pair();
+    callback use-chord-track(int);
+    callback compare-chord-pair(ChordPairSettings);
+    callback select-chord-row(int);
+    callback confirm-chord-event(int, string);
+    callback export-chord-midi(int);
+    callback audition-chord-pair();
+    callback stop-chord-pair();
+    out property <bool> chord-pair-text-focused: chord-editor.editing;
+    in property <bool> local-keys-open;
+    out property <bool> local-key-text-focused: key-panel.editing;
+    in property <bool> local-keys-busy;
+    in property <string> local-keys-status;
+    in property <string> local-keys-entry;
+    in property <string> local-keys-exit;
+    in property <[string]> local-keys-sections;
+    callback open-local-keys();
+    callback close-local-keys();
+    callback select-local-key-times(string, string);
+    in property <bool> clip-check-open;
+    in property <[string]> clip-check-markers;
+    in property <int> clip-check-index: -1;
+    in property <string> clip-check-status;
+    in property <bool> clip-check-route;
+    in property <bool> clip-check-busy;
+    in property <int> clip-check-track;
+    callback open-clip-check();
+    callback select-clip-marker(int);
+    callback audition-clip-check(bool);
+    callback stop-clip-check();
+    callback export-clip-check();
+    callback close-clip-check();
+    callback open-metadata-diagnosis();
+    callback close-metadata-diagnosis();
+    private property <bool> diagnosis-visible: root.tab == 4 && !root.import-review-open
+        && !root.tempo-comparison.open && !root.cover-label-editor.open && root.metadata-diagnosis.open
+        && root.metadata-diagnosis.track-id == root.selection;
+    out property <bool> diagnosis-text-focused: root.diagnosis-visible && diagnosis-panel.text-focused;
+    in-out property <bool> gig-planning-open;
+    in property <[string]> gig-names;
+    in property <int> gig-selection-index;
+    in property <GigRuleView> gig-rule-view;
+    callback create-gig(string);
+    callback select-gig(int);
+    callback save-gig-rule(int, string, string);
+    private property <bool> gig-visible: root.gig-planning-open && root.tab == 4 && !root.import-review-open
+        && !root.tempo-comparison.open && !root.cover-label-editor.open && !root.metadata-diagnosis.open;
+    out property <bool> gig-text-focused: root.gig-visible && gig-panel.text-focused;
+    callback select-tempo-variant(bool);
+    callback apply-tempo-comparison();
+    callback cancel-tempo-comparison();
+    callback toggle-tempo-grid-lock();
     callback suggest-track(bool);
     in property <bool> assistant-enabled;
     in property <bool> assistant-running;
     in property <string> analysis-title;
     in property <string> analysis-summary;
     in property <[float]> analysis-waveform;
+    in property <[float]> layer-percussion;
+    in property <[float]> layer-tonal;
+    in property <string> layer-status;
+    in-out property <bool> split-waveform;
     in property <bool> can-analyze;
     in property <string> analysis-progress;
     in property <bool> analysis-running;
@@ -127,6 +363,7 @@ export component TrackLibrary inherits Rectangle {
     changed rows => { root.cancel-deck-drag(); }
     changed capture-deck-drag => { root.cancel-deck-drag(); }
     changed busy => { if root.busy { root.cancel-deck-drag(); } }
+    changed import-review-open => { if root.import-review-open { root.cancel-deck-drag(); } }
     in property <bool> job-active;
     callback cancel-job();
     in property <[LibraryRow]> rows;
@@ -155,6 +392,7 @@ export component TrackLibrary inherits Rectangle {
     callback retry-save();
     background: #111111; border-color: #333333; border-width: 1px;
     VerticalLayout {
+        visible: !root.import-review-open;
         padding: 3px; spacing: 2px;
         HorizontalLayout {
             spacing: 2px;
@@ -188,7 +426,7 @@ export component TrackLibrary inherits Rectangle {
             text: "Crates: select on the left; + / + Sub / + Smart create groups. Add / Remove manage the selected track.";
             color: #bbbbbb; font-size: 11px; wrap: word-wrap;
         }
-        if tab == 4 : VerticalLayout {
+        if tab == 4 && !root.diagnosis-visible && !root.gig-visible && !root.clip-check-open && !root.local-keys-open && !root.chord-pair-open && !root.cue-trim-open : VerticalLayout {
             spacing: 2px;
             if root.analysis-progress != "" : Text { height: 14px; text: root.analysis-progress; accessible-role: text; accessible-label: "Library analysis progress"; accessible-description: root.analysis-progress; font-size: 11px; color: #cccccc; overflow: elide; }
             HorizontalLayout {
@@ -196,10 +434,151 @@ export component TrackLibrary inherits Rectangle {
                 if root.assistant-enabled : LibraryButton { text: "Similar"; accessible-label: "Suggest a similar track"; enabled: !root.busy && !root.assistant-running && root.selection > 0; clicked => { root.suggest-track(false); } }
                 if root.assistant-enabled : LibraryButton { text: "Transition"; accessible-label: "Suggest next track and transition"; enabled: !root.busy && !root.assistant-running && root.selection > 0; clicked => { root.suggest-track(true); } }
                 LibraryButton { text: "Add phrase cues"; accessible-label: "Add suggested phrase cues to empty slots"; enabled: !root.busy && root.selection > 0 && root.analysis-waveform.length > 0; clicked => { root.add-phrase-cues(); } }
+                if !root.tempo-comparison.open : LibraryButton {
+                    text: "Compare BPM"; accessible-label: "Compare half and double tempo";
+                    enabled: root.selection > 0;
+                    clicked => { root.open-tempo-comparison(); }
+                }
+                if !root.cover-label-editor.open : LibraryButton {
+                    text: "Cover labels / Piano"; accessible-label: "Edit confirmed cover labels";
+                    accessible-description: "Compare the key with a reference piano in your headphones.";
+                    enabled: root.selection > 0;
+                    clicked => { root.open-cover-labels(); }
+                }
+                if !root.tempo-comparison.open && !root.cover-label-editor.open : LibraryButton {
+                    text: "BPM / key info"; accessible-label: "Open metadata diagnosis";
+                    enabled: root.selection > 0;
+                    clicked => { root.open-metadata-diagnosis(); }
+                }
+                if !root.tempo-comparison.open && !root.cover-label-editor.open : LibraryButton {
+                    text: "Gig plan"; accessible-label: "Open gig planning";
+                    clicked => { root.gig-planning-open = true; }
+                }
+                if !root.tempo-comparison.open && !root.cover-label-editor.open : LibraryButton {
+                    text: "Clip check"; accessible-label: "Find clipped peaks";
+                    enabled: root.selection > 0;
+                    clicked => { root.open-clip-check(); }
+                }
                 Text { horizontal-stretch: 1; vertical-alignment: center; text: root.analysis-title; font-size: 11px; color: #eeeeee; overflow: elide; }
             }
+            if !root.tempo-comparison.open && !root.cover-label-editor.open : HorizontalLayout {
+                spacing: 3px;
+                LibraryButton {
+                    text: "Local keys"; accessible-label: "Inspect local key changes";
+                    enabled: root.selection > 0;
+                    clicked => { root.open-local-keys(); }
+                }
+                LibraryButton {
+                    text: "Chord pair"; accessible-label: "Compare two chord passages";
+                    enabled: root.selection > 0;
+                    clicked => { root.open-chord-pair(); }
+                }
+                LibraryButton {
+                    text: "Cue trim"; accessible-label: "Fine-tune a hot cue";
+                    enabled: root.selection > 0;
+                    clicked => { root.open-cue-trim(); }
+                }
+                LibraryButton {
+                    text: "Set planning"; accessible-label: "Open set planning";
+                    clicked => { root.open-set-planning(); }
+                }
+                LibraryButton {
+                    text: root.split-waveform ? "Regular waveform" : "Percussive / tonal";
+                    accessible-label: "Switch Prepare waveform layers"; enabled: root.selection > 0 || root.split-waveform;
+                    clicked => { root.split-waveform = !root.split-waveform; }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
             Text { height: 14px; text: root.analysis-summary; accessible-role: text; accessible-label: "Prepare analysis results"; accessible-description: root.analysis-summary; font-size: 11px; color: #cccccc; overflow: elide; }
-            if root.analysis-waveform.length > 0 : Rectangle {
+            if root.cover-label-editor.open : VerticalLayout {
+                spacing: 2px;
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text { text: "Camelot"; color: #eee; font-size: 11px; vertical-alignment: center; }
+                    LineEdit {
+                        width: 64px; height: 24px; text: root.cover-label-editor.key;
+                        placeholder-text: "e.g. 8A"; accessible-label: "Confirmed Camelot key";
+                        edited => {
+                            if root.reference-active { root.stop-reference(); }
+                            root.cover-label-editor.key = self.text;
+                        }
+                    }
+                    Text { text: "Energy"; color: #eee; font-size: 11px; vertical-alignment: center; }
+                    LineEdit {
+                        width: 60px; height: 24px; text: root.cover-label-editor.energy;
+                        placeholder-text: "1–10"; accessible-label: "Confirmed energy";
+                        accessible-description: "Optional. Leave blank for unknown energy.";
+                        edited => { root.cover-label-editor.energy = self.text; }
+                    }
+                    LibraryButton {
+                        text: "Save"; accessible-label: "Save cover labels";
+                        enabled: root.cover-label-editor.track-id == root.selection;
+                        clicked => { root.save-cover-labels(root.cover-label-editor.track-id, root.cover-label-editor.key, root.cover-label-editor.energy); }
+                    }
+                    LibraryButton { text: "Cancel"; accessible-label: "Cancel cover labels"; clicked => { root.cancel-cover-labels(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text { text: "Piano · Start (s)"; color: #eee; vertical-alignment: center; font-size: 11px; }
+                    passage := LineEdit {
+                        width: 56px; height: 24px; text: "0"; accessible-label: "Passage start in seconds";
+                        edited => { if root.reference-active { root.stop-reference(); } }
+                    }
+                    LibraryButton {
+                        text: "Root"; accessible-label: "Audition reference root";
+                        enabled: root.reference-route && root.cover-label-editor.track-id == root.selection;
+                        clicked => { root.audition-reference(root.selection, root.cover-label-editor.key, passage.text, false); }
+                    }
+                    LibraryButton {
+                        text: "Chord"; accessible-label: "Audition reference chord";
+                        enabled: root.reference-route && root.cover-label-editor.track-id == root.selection;
+                        clicked => { root.audition-reference(root.selection, root.cover-label-editor.key, passage.text, true); }
+                    }
+                    LibraryButton {
+                        text: "Stop"; accessible-label: "Stop reference piano"; enabled: root.reference-active;
+                        clicked => { root.stop-reference(); }
+                    }
+                    LibraryButton {
+                        text: "Reset key"; accessible-label: "Restore analyzed key";
+                        enabled: root.cover-label-editor.track-id == root.selection;
+                        clicked => { root.reset-confirmed-key(root.selection); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                if root.reference-status != "" || !root.reference-route : Text {
+                    text: root.reference-status != "" ? root.reference-status : "Choose a separate headphone output to hear the piano.";
+                    color: #ddd; font-size: 11px; wrap: word-wrap;
+                    accessible-role: text; accessible-label: "Reference piano status"; accessible-description: self.text;
+                }
+                if root.cover-label-editor.status != "" : Text {
+                    text: root.cover-label-editor.status; wrap: word-wrap; color: #ffcf95; font-size: 11px;
+                    accessible-role: text; accessible-label: "Cover label status"; accessible-description: self.text;
+                }
+            }
+            if root.tempo-comparison.open : TempoComparisonPanel {
+                comparison: root.tempo-comparison;
+                select-variant(fast) => { root.select-tempo-variant(fast); }
+                apply-comparison => { root.apply-tempo-comparison(); }
+                cancel-comparison => { root.cancel-tempo-comparison(); }
+                toggle-lock => { root.toggle-tempo-grid-lock(); }
+            }
+            if root.split-waveform : Text { height: 14px; text: root.layer-status; color: DjTheme.text-secondary; overflow: elide; }
+            if root.split-waveform && root.layer-percussion.length > 0 : Rectangle {
+                height: 24px; background: #0a0a0a; accessible-role: image; accessible-label: "Percussive and tonal energy on the track timeline";
+                for peak[i] in root.layer-percussion : Rectangle {
+                    x: i * parent.width / max(1, root.layer-percussion.length);
+                    width: max(1px, parent.width / max(1,root.layer-percussion.length));
+                    height: peak * parent.height / 2;
+                    y: parent.height / 2 - self.height; background: #f5a94c;
+                }
+                for peak[i] in root.layer-tonal : Rectangle {
+                    x: i * parent.width / max(1,root.layer-tonal.length);
+                    width: max(1px, parent.width / max(1,root.layer-tonal.length));
+                    height: peak * parent.height / 2; y: parent.height / 2; background: #5ddbd4;
+                }
+            }
+            if root.analysis-waveform.length > 0 && (!root.split-waveform || root.layer-percussion.length == 0) : Rectangle {
                 height: 20px; background: #0a0a0a;
                 for peak[index] in root.analysis-waveform : Rectangle {
                     x: index * parent.width / root.analysis-waveform.length;
@@ -210,6 +589,75 @@ export component TrackLibrary inherits Rectangle {
                 }
             }
         }
+        CueTrimPanel {
+            visible: root.cue-trim-open && root.cue-trim-track == root.selection;
+            busy: root.cue-trim-busy; route: root.cue-trim-route;
+            slots: root.cue-trim-slots; slot: root.cue-trim-slot;
+            reference: root.cue-trim-reference; suggested: root.cue-trim-suggested;
+            position-seconds: root.cue-trim-position; status: root.cue-trim-status;
+            select-slot(i) => { root.select-cue-trim-slot(i); }
+            select-reference(i) => { root.select-cue-trim-reference(i); }
+            move-step(direction) => { root.move-cue-trim(direction); }
+            set-position(seconds) => { root.set-cue-trim-position(seconds); }
+            audition => { root.audition-cue-trim(); }
+            stop => { root.stop-cue-trim(); }
+            save => { root.save-cue-trim(); }
+            close => { root.close-cue-trim(); root.focus-tracks(); }
+        }
+        chord-editor := ChordPairPanel {
+            visible: root.chord-pair-open; busy: root.chord-pair-busy; route: root.chord-pair-route;
+            a: root.chord-pair-a; b: root.chord-pair-b; has-selection: root.selection > 0;
+            status: root.chord-pair-status; rows: root.chord-pair-rows; index: root.chord-pair-index;
+            use-track(side) => { root.use-chord-track(side); }
+            compare(settings) => { root.compare-chord-pair(settings); }
+            select-row(index) => { root.select-chord-row(index); }
+            confirm(side, label) => { root.confirm-chord-event(side, label); }
+            audition => { root.audition-chord-pair(); }
+            export-midi(side)=>{root.export-chord-midi(side);}
+            stop => { root.stop-chord-pair(); }
+            close => { root.close-chord-pair(); root.focus-tracks(); }
+        }
+        key-panel := LocalKeysPanel {
+            visible: root.local-keys-open;
+            sections: root.local-keys-sections; busy: root.local-keys-busy;
+            status: root.local-keys-status; entry: root.local-keys-entry; exit-key: root.local-keys-exit;
+            select-times(entry, exit) => { root.select-local-key-times(entry, exit); }
+            close => { root.close-local-keys(); root.focus-tracks(); }
+        }
+        if root.clip-check-open : ClipCheckPanel {
+            markers: root.clip-check-markers; index: root.clip-check-index;
+            status: root.clip-check-status; headphones: root.clip-check-route; busy: root.clip-check-busy;
+            select-marker(index) => { root.select-clip-marker(index); }
+            audition(processed) => { root.audition-clip-check(processed); }
+            stop => { root.stop-clip-check(); }
+            export-copy => { root.export-clip-check(); }
+            close => { root.close-clip-check(); root.focus-tracks(); }
+        }
+        gig-panel := GigPlanningPanel {
+            visible: root.gig-visible;
+            min-height: self.visible ? 112px : 0px; preferred-height: self.visible ? 123px : 0px;
+            max-height: self.visible ? 135px : 0px;
+            names: root.gig-names; selection-index: root.gig-selection-index;
+            selected-track: root.selection; rule: root.gig-rule-view;
+            close => { root.gig-planning-open = false; root.focus-tracks(); }
+            create-gig(name) => { root.create-gig(name); }
+            select-gig(index) => { root.select-gig(index); }
+            save-rule(id, status, reason) => { root.save-gig-rule(id, status, reason); }
+        }
+        diagnosis-panel := MetadataDiagnosisPanel {
+            visible: root.diagnosis-visible;
+            min-height: self.visible ? 76px : 0px;
+            preferred-height: self.visible ? 120px : 0px;
+            max-height: self.visible ? 140px : 0px;
+            diagnosis: root.metadata-diagnosis;
+            close => { root.close-metadata-diagnosis(); root.focus-tracks(); }
+            compare-tempo => {
+                if root.diagnosis-visible && root.metadata-diagnosis.compare {
+                    root.close-metadata-diagnosis();
+                    root.open-tempo-comparison();
+                }
+            }
+        }
         if can-relocate : HorizontalLayout {
             height: 26px;
             LibraryButton { text: "Relocate"; enabled: !busy; accessible-label: "Relocate selected missing library track"; clicked => { root.relocate-track(); } }
@@ -217,7 +665,8 @@ export component TrackLibrary inherits Rectangle {
         table-scroll := Flickable {
           interactive: false;
           content-x <=> root.table-scroll-x;
-          min-width: 0px; min-height: 22px; vertical-stretch: 1;
+          // The column header and one selectable 22px row must fit together.
+          min-width: 0px; min-height: 46px; vertical-stretch: 1;
           content-width: max(self.width, root.table-width * 1px);
           content-height: self.height;
           VerticalLayout {
@@ -236,6 +685,7 @@ export component TrackLibrary inherits Rectangle {
         nav := FocusScope {
             min-height: 22px; vertical-stretch: 1;
             key-pressed(event) => {
+                if root.cue-trim-open { return reject; }
                 if event.text == Key.DownArrow { root.move-selection(1); return accept; }
                 if event.text == Key.UpArrow { root.move-selection(-1); return accept; }
                 return reject;
@@ -251,7 +701,12 @@ export component TrackLibrary inherits Rectangle {
                         spacing: 0px;
                         for column in root.columns : Rectangle {
                             width: column.width * 1px; height: 22px;
-                            if column.id == 11 : Image { x:1px; y:1px; width:parent.width - 2px; height:parent.height - 2px; source:row.cover; image-fit:contain; accessible-label:"Track " + row.id + " cover art"; }
+                            if column.id == 11 : CoverThumbnail {
+                                width: parent.width; height: parent.height;
+                                track-id: row.id; artwork: row.cover;
+                                key-label: row.cover-key; energy: row.cover-energy;
+                                selected: root.selection == row.id; overlay: root.cover-overlay-enabled;
+                            }
                         if column.id != 11 : Text {
                             width: parent.width; height: parent.height;
                             text: column.id == 6 ? "" + row.id : column.id == 0 ? row.name : column.id == 3 ? (row.artist == "" ? "—" : row.artist) : column.id == 4 ? (row.album == "" ? "—" : row.album) : column.id == 7 ? row.bpm : column.id == 8 ? row.key : column.id == 9 ? row.gain : column.id == 10 ? (row.available ? row.analysis-status : "Missing") : column.id == 5 ? row.prepare-duration : column.id == 2 ? row.path : (row.available ? row.format : "MISSING");
@@ -293,6 +748,12 @@ export component TrackLibrary inherits Rectangle {
         }
           }
         }
+        if !root.gig-visible && root.gig-selection-index > 0 && root.selection > 0
+            && root.gig-rule-view.track-id == root.selection && root.gig-rule-view.status == "avoid"
+            && root.gig-rule-view.warning != "" : Text {
+            text: root.gig-rule-view.warning; accessible-role: text; accessible-label: "Gig warning for selected track";
+            accessible-description: self.text; color: #ffd379; font-size: 12px; height: 17px; overflow: elide;
+        }
         HorizontalLayout {
             LibraryButton { text: "Columns"; accessible-label: "Configure track columns"; clicked => { root.columns-open = !root.columns-open; } }
             LibraryButton { text: "◀"; accessible-label: "Scroll track columns left"; enabled: root.table-scroll-x < 0px; clicked => { root.table-scroll-x = min(0px, root.table-scroll-x + 240px); } }
@@ -307,7 +768,7 @@ export component TrackLibrary inherits Rectangle {
             if save-failed : LibraryButton { text: "Retry save"; accessible-label: "Retry library save"; clicked => { root.retry-save(); } }
         }
     }
-        if root.columns-open : Rectangle {
+        if root.columns-open && !root.import-review-open : Rectangle {
             x: 8px; y: 30px; width: min(420px, parent.width - 16px); height: min(280px, parent.height - 36px);
             background: #222222; border-width: 1px; border-color: #aaaaaa;
             VerticalLayout {
@@ -315,6 +776,11 @@ export component TrackLibrary inherits Rectangle {
                 HorizontalLayout {
                     Text { text: "Columns · visibility and order"; color: #eeeeee; font-size: 11px; }
                     LibraryButton { text: "Close"; accessible-label: "Close track columns"; clicked => { root.columns-open = false; } }
+                }
+                CheckBox {
+                    text: "Show key and energy on covers"; accessible-label: "Show key and energy on covers";
+                    checked: root.cover-overlay-enabled; enabled: root.columns-enabled;
+                    toggled => { root.toggle-cover-overlay(); }
                 }
                 ListView {
                     accessible-label: "Track column preferences";
@@ -326,5 +792,14 @@ export component TrackLibrary inherits Rectangle {
                 }
             }
         }
+    }
+    review := ImportReviewPanel {
+        width: parent.width; height: parent.height;
+        active: root.import-review-open; checking: root.import-review-checking;
+        rows: root.import-review-rows; status: root.import-review-status;
+        toggle-file(index) => { root.toggle-import-review(index); }
+        apply-review => { root.apply-import-review(); }
+        cancel-review => { root.cancel-import-review(); }
+        rescan => { root.rescan-import-review(); }
     }
 }

@@ -72,6 +72,32 @@ class LibraryAssistantTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 assistant.recommend(db, 1, 51)
 
+    def test_recommendations_use_current_gig_and_manual_search_keeps_exclusions(self):
+        with closing(sqlite3.connect(self.path, isolation_level=None)) as db:
+            db.execute("PRAGMA user_version=20")
+        with assistant.library(self.path) as legacy:
+            self.assertEqual([r["id"] for r in assistant.recommend(legacy, 1, 1)], [2])
+        with closing(sqlite3.connect(self.path, isolation_level=None)) as db:
+            db.executescript("""
+                PRAGMA user_version=21;
+                CREATE TABLE gig_selection(singleton INTEGER PRIMARY KEY, active_gig_id INTEGER);
+                CREATE TABLE gig_rules(gig_id INTEGER, track_id INTEGER, status TEXT,
+                                       PRIMARY KEY(gig_id, track_id));
+                INSERT INTO gig_selection VALUES(1, 7);
+                INSERT INTO gig_rules VALUES(7, 2, 'avoid'), (8, 2, 'required');
+            """)
+        gram = [[float(i == j) for j in range(len(WORDS))] for i in range(len(WORDS))]
+        for active_gig, best in [(7, 3), (8, 2), (None, 2)]:
+            with closing(sqlite3.connect(self.path, isolation_level=None)) as writer:
+                writer.execute("UPDATE gig_selection SET active_gig_id=?", (active_gig,))
+            with assistant.library(self.path) as db, self.subTest(active_gig=active_gig):
+                for transition in (False, True):
+                    result = assistant.recommend(db, 1, 1, transition=transition)
+                    self.assertEqual([row["id"] for row in result], [best])
+                self.assertEqual([r["id"] for r in assistant.search(db, "Track 2")], [2])
+                self.assertEqual(assistant.details(db, 2)["id"], 2)
+                self.assertEqual(assistant.compare_history(db, gram, 1)["tempo_hits"], 1)
+
     def test_rank_evidence_and_cues_with_and_without_dictionary(self):
         gram = [[float(i == j) for j in range(len(WORDS))] for i in range(len(WORDS))]
         self.assertAlmostEqual(cosine((0, 4), (0, 4), gram), 1.0)

@@ -201,6 +201,8 @@ Priorität und Reihenfolge stehen im [Umsetzungsplan](../MIXED_IN_KEY_UMSETZUNGS
 
 ### D06
 
+**Implementierungsstand:** Classic und Modern bieten den Taktgrenzen-Sprung für A und B an. Der Renderer beginnt am berechneten nächsten Takt mit einer linearen Überblendung über 12 ms Ausgabezeit. Innerhalb dieser Zeit laufen Ausgangs- und Zielposition weiter. Ein Ticket kennzeichnet die einzelne Vormerkung, die Wellenform zeigt ihre Zielposition. Signalverlauf und Audiolast sind im [Prüfbericht](../MUSIKVORBEREITUNG_ABSCHLUSSPRUEFUNG.md) dokumentiert.
+
 **Zum nächsten Abschnitt blenden.** FR-001/005/006 beschreiben rasterbezogene Slices und nahtlose Wiedergabe. [Spec 17](../17-beat-grid-sync/spec.md) FR-006–009 liefert Taktanfang, Quantisierung und Rasterposition. Es fehlt der vorher ankündbare, überblendete Sprung im bereits laufenden Deck. [Flow 8 Deck](https://mixedinkey.com/flow-dj-software/)
 
 **REQ-D06** Ein gewählter Cue oder Abschnitt muss im laufenden Deck als Sprungziel vormerkbar und bis zur Ausführung widerrufbar sein. Am nächsten gültigen Taktanfang muss der Zielabschnitt mit seinem markierten Einstieg unter einer kurzen, definierten Überblendung einsetzen. Die Wellenform zeigt das vorgemerkte Ziel. Ein Trackwechsel, Stopp oder nicht auflösbares Beatgrid verwirft die Vormerkung mit sichtbarem Status. Das andere Deck und die gespeicherten Cues behalten ihren Zustand.

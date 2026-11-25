@@ -1,8 +1,57 @@
 //! Header/tag inspection on library/load workers; no PCM decode or tag writes.
+pub(crate) mod diagnosis;
+use drdjpro_ui_spike::analysis::keys::CamelotKey;
 use std::path::Path;
 use symphonia::core::meta::{Limit, MetadataOptions, MetadataRevision, StandardTagKey};
+
+/// DJ-confirmed catalog values, independent of estimated key, loudness and source tags.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MusicLabels {
+    confirmed_key: Option<CamelotKey>,
+    energy: Option<u8>,
+}
+impl MusicLabels {
+    /// Blank inputs explicitly clear the corresponding label.
+    pub fn parse(key: &str, energy: &str) -> Result<Self, String> {
+        let key = key.trim().to_ascii_uppercase();
+        let energy = energy.trim();
+        let energy = if energy.is_empty() {
+            None
+        } else {
+            Some(
+                energy
+                    .parse()
+                    .map_err(|_| "Energy must be a whole number from 1 to 10")?,
+            )
+        };
+        Self::from_stored((!key.is_empty()).then_some(key.as_str()), energy)
+    }
+    pub(crate) fn from_stored(key: Option<&str>, energy: Option<u32>) -> Result<Self, String> {
+        let confirmed_key = key
+            .map(|value| {
+                CamelotKey::parse(value)
+                    .filter(|key| key.to_string() == value)
+                    .ok_or("Use a Camelot key from 1A to 12B")
+            })
+            .transpose()?;
+        if energy.is_some_and(|e| !(1..=10).contains(&e)) {
+            return Err("Energy must be a whole number from 1 to 10".into());
+        }
+        Ok(Self {
+            confirmed_key,
+            energy: energy.map(|e| e as u8),
+        })
+    }
+    pub fn key(self) -> Option<CamelotKey> {
+        self.confirmed_key
+    }
+    pub fn energy(self) -> Option<u8> {
+        self.energy
+    }
+}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TrackMetadata {
+    pub music_labels: MusicLabels,
     /// Explicit XML/API metadata wins over later passive file-tag inspection.
     pub prefer_imported_tags: bool,
     pub analysis: Option<crate::audio_analyzer::TrackAnalysisResult>,
@@ -94,6 +143,13 @@ fn tags(output: &mut TrackMetadata, revision: &MetadataRevision) {
         }
     }
 }
+fn header_options() -> MetadataOptions {
+    MetadataOptions {
+        limit_metadata_bytes: Limit::Maximum(512 * 1024),
+        limit_visual_bytes: Limit::Maximum(0),
+    }
+}
+
 pub fn read(path: &Path) -> TrackMetadata {
     read_cancellable(path, &crate::cancellation::Cancellation::default())
         .expect("a fresh cancellation token cannot be cancelled")
@@ -103,25 +159,28 @@ pub(crate) fn read_cancellable(
     path: &Path,
     cancel: &crate::cancellation::Cancellation,
 ) -> Result<TrackMetadata, String> {
+    probe_cancellable(path, cancel).map(|(metadata, _)| metadata)
+}
+
+/// Report whether an audio track was found separately from recoverable header warnings.
+pub(crate) fn probe_cancellable(
+    path: &Path,
+    cancel: &crate::cancellation::Cancellation,
+) -> Result<(TrackMetadata, bool), String> {
     cancel.check()?;
     if crate::opus_audio::is_opus(path).unwrap_or(false) {
-        let metadata =
-            crate::opus_audio::metadata(path, cancel).unwrap_or_else(|error| TrackMetadata {
-                scanned: true,
-                error: Some(text(&error)),
-                ..Default::default()
-            });
+        let result = crate::opus_audio::metadata(path, cancel);
+        let readable = result.is_ok();
+        let metadata = result.unwrap_or_else(|error| TrackMetadata {
+            scanned: true,
+            error: Some(text(&error)),
+            ..Default::default()
+        });
         cancel.check()?;
-        return Ok(metadata);
+        return Ok((metadata, readable));
     }
     let result = (|| -> Result<TrackMetadata, Box<dyn std::error::Error>> {
-        let (mut probed, warning) = crate::media_input::probe(
-            path,
-            &MetadataOptions {
-                limit_metadata_bytes: Limit::Maximum(512 * 1024),
-                limit_visual_bytes: Limit::Maximum(0),
-            },
-        )?;
+        let (mut probed, warning) = crate::media_input::probe(path, &header_options())?;
         let mut output = TrackMetadata {
             scanned: true,
             error: warning,
@@ -150,19 +209,34 @@ pub(crate) fn read_cancellable(
         }
         Ok(output)
     })();
+    let readable = result.is_ok();
     let metadata = result.unwrap_or_else(|e| TrackMetadata {
         scanned: true,
         error: Some(text(&e.to_string())),
         ..Default::default()
     });
     cancel.check()?;
-    Ok(metadata)
+    Ok((metadata, readable))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::{tagged_mp3, tagged_wav, wav_file, TempFile};
+    #[test]
+    fn music_labels_validate_known_unknown_and_invalid_inputs() {
+        let known = MusicLabels::parse(" 8b ", "10").unwrap();
+        assert_eq!(known.key().unwrap().to_string(), "8B");
+        assert_eq!(known.energy(), Some(10));
+        for key in ["0A", "13B", "08A", "+1B", "major"] {
+            assert!(MusicLabels::parse(key, "").is_err(), "{key}");
+        }
+        for energy in ["-1", "0", "11", "2.3"] {
+            assert!(MusicLabels::parse("", energy).is_err(), "{energy}");
+        }
+        assert!(MusicLabels::parse(" ", "10").unwrap().key().is_none());
+        assert!(MusicLabels::parse("8B", " ").unwrap().energy().is_none());
+    }
     #[test]
     fn reads_utf8_mp3_tags_and_header_duration_without_pcm_decode() {
         let file = tagged_mp3("Canción 日本", "DJ Ñ", "Album 2026");

@@ -1,0 +1,96 @@
+import { Button, CheckBox, ComboBox, LineEdit, ListView } from "std-widgets.slint";
+import { DjTheme } from "theme.slint";
+
+export struct OrderAnchorRow { title: string, fixed: bool }
+
+export component CrateOrderWindow inherits Window {
+    title: "Arrange setlist";
+    preferred-width: 790px; preferred-height: 600px; min-width: 540px; min-height: 420px;
+    background: DjTheme.app-bg;
+    in property <string> crate-label;
+    in property <[OrderAnchorRow]> anchors;
+    in property <[string]> variants;
+    in property <int> variant-index: -1;
+    in property <[string]> preview;
+    in property <[string]> transitions;
+    in property <int> transition-index: -1;
+    in property <bool> busy;
+    in property <bool> saving;
+    in property <bool> can-audition;
+    in property <bool> has-route;
+    in property <string> status;
+    callback reload-order();
+    callback toggle-anchor(int);
+    callback generate-order(string);
+    callback choose-variant(int);
+    callback choose-transition(int);
+    callback audition();
+    callback stop-audition();
+    callback apply-order();
+    callback dismiss();
+    VerticalLayout {
+        padding: 12px; spacing: 7px;
+        HorizontalLayout {
+            Text { text: root.crate-label; color: DjTheme.text-primary; font-weight: 700; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+            Button { text: "Reload crate"; enabled: !root.saving; clicked => { root.reload-order(); } }
+        }
+        HorizontalLayout {
+            spacing: 9px;
+            VerticalLayout {
+                horizontal-stretch: 1; spacing: 3px;
+                Text { text: "Original order · check positions to keep"; color: DjTheme.text-secondary; }
+                ListView {
+                    for row[index] in root.anchors : CheckBox {
+                        text: row.title; checked: row.fixed; enabled: !root.busy;
+                        accessible-label: "Keep position " + row.title;
+                        toggled => { root.toggle-anchor(index); }
+                    }
+                }
+            }
+            VerticalLayout {
+                horizontal-stretch: 1; spacing: 3px;
+                ComboBox {
+                    model: root.variants; current-index: root.variant-index;
+                    enabled: !root.busy && root.variants.length > 0;
+                    accessible-label: "Choose order variant";
+                    selected => { root.choose-variant(self.current-index); }
+                }
+                ListView {
+                    for row in root.preview : Text { height: 26px; text: row; color: DjTheme.text-primary; vertical-alignment: center; overflow: elide; }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            Text { text: "Seed"; color: DjTheme.text-secondary; vertical-alignment: center; }
+            seed := LineEdit { text: "1"; width: 96px; accessible-label: "Order variation seed"; }
+            Button { text: "Generate variants"; enabled: !root.busy && root.anchors.length > 1; clicked => { root.generate-order(seed.text); } }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        Text { text: "Difficult transitions"; color: DjTheme.text-primary; }
+        ListView {
+            height: 100px;
+            for item[index] in root.transitions : Rectangle {
+                height: max(32px, label.preferred-height + 8px);
+                background: index == root.transition-index ? #07577e : #181818;
+                accessible-role: button; accessible-label: item;
+                accessible-action-default => { if !root.busy { root.choose-transition(index); } }
+                label := Text { x: 4px; width: parent.width - 8px; text: item; color: DjTheme.text-primary; vertical-alignment: center; wrap: word-wrap; }
+                TouchArea { enabled: !root.busy; clicked => { root.choose-transition(index); } }
+            }
+        }
+        HorizontalLayout {
+            spacing: 5px;
+            Button { text: "Hear transition"; enabled: root.can-audition && !root.busy; clicked => { root.audition(); } }
+            Button { text: "Stop"; clicked => { root.stop-audition(); } }
+            if !root.has-route : Text { text: "Select a separate headphone output"; color: DjTheme.text-secondary; vertical-alignment: center; wrap: word-wrap; }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: root.status; color: DjTheme.text-secondary; horizontal-stretch: 1; wrap: word-wrap; vertical-alignment: center; accessible-role: text; accessible-label: "Setlist status"; accessible-description: self.text; }
+            Button { text: "Discard"; enabled: !root.saving; clicked => { root.dismiss(); } }
+            Button { text: "Apply order"; enabled: !root.busy && root.variant-index >= 0; clicked => { root.apply-order(); } }
+        }
+    }
+}

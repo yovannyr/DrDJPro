@@ -1,0 +1,53 @@
+import { ComboBox, LineEdit } from "std-widgets.slint";
+import { LibraryButton } from "controls.slint";
+import { DjTheme } from "theme.slint";
+
+export component LocalKeysPanel inherits Rectangle {
+    in property <[string]> sections;
+    in property <bool> busy;
+    in property <string> status;
+    in property <string> entry;
+    in property <string> exit-key;
+    out property <bool> editing: root.visible && (entry-time.has-focus || exit-time.has-focus || timeline.has-focus);
+    changed visible => {
+        if root.visible {
+            entry-time.text = "0"; exit-time.text = ""; timeline.current-index = 0;
+            entry-time.focus();
+        }
+    }
+    callback select-times(string, string);
+    callback close();
+    accessible-role: groupbox; accessible-label: "Local key timeline";
+    background: DjTheme.panel-dark;
+    min-height: root.visible ? 106px : 0px;
+    preferred-height: root.visible ? 110px : 0px;
+    max-height: root.visible ? 124px : 0px;
+    VerticalLayout {
+        padding: 4px; spacing: 2px;
+        HorizontalLayout {
+            spacing: 5px;
+            Text { text: "Local keys"; color: DjTheme.text-primary; vertical-alignment: center; }
+            timeline := ComboBox { model: root.sections; enabled: !root.busy && root.sections.length > 0; accessible-label: "Local key sections"; }
+            LibraryButton { text: "Close"; accessible-label: "Close local key timeline"; clicked => { root.close(); } }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            Text { text: "Entry (s)"; color: DjTheme.text-primary; vertical-alignment: center; }
+            entry-time := LineEdit { width: 62px; text: "0"; accessible-label: "Entry time in seconds"; }
+            Text { text: "Exit (s)"; color: DjTheme.text-primary; vertical-alignment: center; }
+            exit-time := LineEdit { width: 62px; placeholder-text: "End"; accessible-label: "Exit time in seconds"; }
+            LibraryButton {
+                text: "Apply"; accessible-label: "Find keys at entry and exit";
+                enabled: !root.busy && root.sections.length > 0;
+                clicked => { root.select-times(entry-time.text, exit-time.text); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            Text { text: root.entry == "" ? "" : "Entry · " + root.entry; color: DjTheme.text-primary; overflow: elide; accessible-role: text; accessible-label: "Key at entry"; accessible-description: root.entry; }
+            Text { text: root.exit-key == "" ? "" : "Exit · " + root.exit-key; color: DjTheme.text-primary; overflow: elide; accessible-role: text; accessible-label: "Key at exit"; accessible-description: root.exit-key; }
+        }
+        Text { text: root.status; color: DjTheme.text-secondary; overflow: elide; accessible-role: text; accessible-label: "Local key status"; accessible-description: self.text; }
+    }
+}

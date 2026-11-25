@@ -18,6 +18,29 @@ const MAX_TAGS: usize = 8;
 pub(crate) const TAG_WARNING: &str = "ID3 tags skipped; audio readable: ";
 pub(crate) const WAVE_WARNING: &str = "MPEG audio read from WAV data; container tags omitted";
 
+/// Open for read-only inspection, without waiting for a writer if this is a Unix FIFO.
+/// The caller must check file type on the returned handle before reading.
+pub(crate) fn open_for_inspection(path: &Path) -> io::Result<File> {
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        // A source replaced by a FIFO must not strand a background inspection.
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    options.open(path)
+}
+
+/// Validate the opened handle each time a decoder reopens a path (including recovery and Opus).
+pub(crate) fn open_regular(path: &Path) -> io::Result<File> {
+    let file = open_for_inspection(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("Not a regular audio file"));
+    }
+    Ok(file)
+}
+
 fn explain_failure(path: &Path, error: Error) -> Error {
     let detail = if std::fs::metadata(path).is_ok_and(|m| m.len() == 0) {
         Some("Audio file is empty (0 bytes)".to_owned())
@@ -60,6 +83,15 @@ fn raw_probe(
     source: impl MediaSource + 'static,
     options: &MetadataOptions,
 ) -> Result<ProbeResult, Error> {
+    raw_probe_with_format(path, source, options, &FormatOptions::default())
+}
+
+fn raw_probe_with_format(
+    path: &Path,
+    source: impl MediaSource + 'static,
+    options: &MetadataOptions,
+    format: &FormatOptions,
+) -> Result<ProbeResult, Error> {
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|x| x.to_str()) {
         hint.with_extension(ext);
@@ -67,7 +99,7 @@ fn raw_probe(
     symphonia::default::get_probe().format(
         &hint,
         MediaSourceStream::new(Box::new(source), Default::default()),
-        &FormatOptions::default(),
+        format,
         options,
     )
 }
@@ -87,17 +119,27 @@ pub(crate) fn probe(
     path: &Path,
     options: &MetadataOptions,
 ) -> Result<(ProbeResult, Option<String>), Error> {
-    match raw_probe(path, File::open(path)?, options) {
+    probe_with_format(path, options, &FormatOptions::default())
+}
+
+/// Keep identical recovery semantics for consumers that need the gapless presentation timeline.
+pub(crate) fn probe_with_format(
+    path: &Path,
+    options: &MetadataOptions,
+    format: &FormatOptions,
+) -> Result<(ProbeResult, Option<String>), Error> {
+    match raw_probe_with_format(path, open_regular(path)?, options, format) {
         Ok(result) => Ok((result, None)),
         Err(error) => {
             if let Ok(source) = mpeg_wave_source(path) {
-                let result = raw_probe(Path::new("payload.mp3"), source, options)
-                    .and_then(require_mp3)
-                    .map_err(|error| explain_failure(path, error))?;
+                let result =
+                    raw_probe_with_format(Path::new("payload.mp3"), source, options, format)
+                        .and_then(require_mp3)
+                        .map_err(|error| explain_failure(path, error))?;
                 Ok((result, Some(WAVE_WARNING.into())))
             } else if eligible(path, &error) {
                 let source = AudioWindow::after_id3(path)?;
-                let result = raw_probe(path, source, options)?;
+                let result = raw_probe_with_format(path, source, options, format)?;
                 Ok((result, Some(format!("{TAG_WARNING}{error}"))))
             } else {
                 Err(explain_failure(path, error))
@@ -108,7 +150,7 @@ pub(crate) fn probe(
 
 /// Rodio hides the parser error; independently validate the recovery source.
 pub(crate) fn recovery_source(path: &Path) -> Result<AudioWindow, Error> {
-    match raw_probe(path, File::open(path)?, &MetadataOptions::default()) {
+    match raw_probe(path, open_regular(path)?, &MetadataOptions::default()) {
         Err(error) => {
             if let Ok(source) = mpeg_wave_source(path) {
                 require_mp3(raw_probe(
@@ -135,7 +177,7 @@ pub(crate) struct AudioWindow {
 }
 impl AudioWindow {
     pub(crate) fn whole(path: &Path) -> io::Result<Self> {
-        let file = File::open(path)?;
+        let file = open_regular(path)?;
         let len = file.metadata()?.len();
         Ok(Self {
             file,
@@ -147,7 +189,7 @@ impl AudioWindow {
         self.len
     }
     fn after_id3(path: &Path) -> io::Result<Self> {
-        let mut file = File::open(path)?;
+        let mut file = open_regular(path)?;
         let len = file.metadata()?.len();
         let mut start = 0;
         for _ in 0..MAX_TAGS {

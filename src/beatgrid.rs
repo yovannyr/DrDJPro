@@ -1,5 +1,7 @@
 //! User-defined beatgrid; no automatic beat or tempo detection.
 use std::time::Duration;
+mod tempo_comparison;
+pub use tempo_comparison::TempoComparison;
 pub const MAX_METER_CHANGES: usize = 16;
 pub const MAX_TEMPO_CHANGES: usize = 64;
 pub const MAX_WARP_MARKERS: usize = 64;
@@ -97,6 +99,7 @@ fn validate_bpm(bpm: f64) -> Result<(), String> {
 pub struct BeatGrid {
     bpm: f64,
     anchor: Duration,
+    locked: bool,
     beats_per_bar: u8,
     meter_denominator: u8,
     changes: [MeterChange; MAX_METER_CHANGES],
@@ -125,6 +128,7 @@ impl BeatGrid {
         Ok(Self {
             bpm,
             anchor,
+            locked: false,
             beats_per_bar: 4,
             meter_denominator: 4,
             changes: [EMPTY_METER; MAX_METER_CHANGES],
@@ -288,6 +292,22 @@ impl BeatGrid {
             return Err("Invalid bar number".into());
         }
         Ok(self.bar_start_beat_signed(i64::from(bar)))
+    }
+    /// Project source milliseconds onto the current notated bar and beat, including warp and meter changes.
+    pub(crate) fn bar_beat_at_ms(self, milliseconds: u64) -> (i64, u8) {
+        let quarters = self.beat_at_time(Duration::from_millis(milliseconds).as_secs_f64()) + 1e-9;
+        let (bar, _) = self.bar_at_beat(quarters);
+        let (beats, denominator) = self
+            .meter_changes()
+            .iter()
+            .rev()
+            .find(|m| i64::from(m.bar) <= bar)
+            .map_or((self.beats_per_bar, self.meter_denominator), |m| {
+                (m.beats, m.denominator)
+            });
+        let offset = (quarters - self.bar_start_beat_signed(bar)) * f64::from(denominator) / 4.;
+        let beat = (offset.floor() + 1.).clamp(1., f64::from(beats)) as u8;
+        (bar, beat)
     }
     fn bar_start_beat_signed(self, bar: i64) -> f64 {
         if bar <= 1 {
@@ -491,6 +511,14 @@ impl BeatGrid {
             ..self
         })
     }
+    /// Whether ordinary grid edits must preserve this saved grid.
+    pub fn is_locked(&self) -> bool {
+        self.locked
+    }
+    pub fn with_locked(mut self, locked: bool) -> Self {
+        self.locked = locked;
+        self
+    }
     pub fn beats_per_bar(self) -> u8 {
         self.beats_per_bar
     }
@@ -499,6 +527,61 @@ impl BeatGrid {
     }
     pub fn bpm(self) -> f64 {
         self.bpm
+    }
+    /// Single-tempo/meter MIDI exports may span the constant part of a variable grid.
+    pub(crate) fn midi_passage(self, start: u64, end: u64) -> Result<(f64, u8, u8), String> {
+        if start >= end {
+            return Err("Choose a nonempty source interval.".into());
+        }
+        let first = start as f64 / 1000.;
+        let last = end as f64 / 1000.;
+        let (bar, _) = self.bar_beat_at_ms(start);
+        let (n, d) = self
+            .meter_changes()
+            .iter()
+            .rev()
+            .find(|m| i64::from(m.bar) <= bar)
+            .map_or((self.beats_per_bar, self.meter_denominator), |m| {
+                (m.beats, m.denominator)
+            });
+        if self.meter_changes().iter().any(|m| {
+            let t = self.time_at_beat(self.bar_start_beat_signed(i64::from(m.bar)));
+            t > first + 1e-9 && t < last - 1e-9 && (m.beats, m.denominator) != (n, d)
+        }) {
+            return Err(
+                "The selected passage crosses a time-signature change. Choose one signature."
+                    .into(),
+            );
+        }
+        let mut cuts = vec![first, last];
+        for t in std::iter::once(self.anchor.as_secs_f64())
+            .chain(
+                self.tempo_changes()
+                    .iter()
+                    .map(|c| self.time_at_beat(c.beat as f64)),
+            )
+            .chain(
+                self.warp_markers()
+                    .iter()
+                    .map(|m| m.position_ns as f64 / 1e9),
+            )
+        {
+            if t > first + 1e-9 && t < last - 1e-9 {
+                cuts.push(t);
+            }
+        }
+        cuts.sort_by(f64::total_cmp);
+        cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        let bpm = self.bpm_at_position(Duration::from_secs_f64((cuts[0] + cuts[1]) * 0.5));
+        if cuts.windows(2).any(|w| {
+            (self.bpm_at_position(Duration::from_secs_f64((w[0] + w[1]) * 0.5)) - bpm).abs() > 1e-6
+        }) {
+            return Err(
+                "The selected passage spans multiple grid tempos. Choose one constant segment."
+                    .into(),
+            );
+        }
+        Ok((bpm, n, d))
     }
     /// Source BPM at this position, including tempo segments and warp scaling.
     /// At a segment boundary the following segment's tempo is returned.
@@ -537,6 +620,35 @@ impl BeatGrid {
     pub fn nearest_beat_frame(self, position: Duration, rate: u32) -> Result<usize, String> {
         self.quantized_frame(position, rate, QuantizeStep::Beat, false)
     }
+    /// Nearest or adjacent quarter-beat source frame on the grid or an independently phased cue lattice.
+    pub(crate) fn cue_quarter_frame(
+        self,
+        position: Duration,
+        reference: Option<Duration>,
+        direction: i32,
+        rate: u32,
+        last: u64,
+    ) -> Result<u64, String> {
+        if rate == 0 || !(-1..=1).contains(&direction) {
+            return Err("Invalid cue step or sample rate".into());
+        }
+        let origin = reference.map_or(0., |p| self.beat_at_time(p.as_secs_f64()));
+        let quarters = (self.beat_at_time(position.as_secs_f64()) - origin) * 4.;
+        let mut index = (quarters + 0.5).floor();
+        let frame = |i: f64| {
+            (self.time_at_beat_nanos(origin + i / 4.) * i128::from(rate) + 500_000_000)
+                .div_euclid(1_000_000_000)
+        };
+        let current = (position.as_nanos() * u128::from(rate) / 1_000_000_000) as i128;
+        let nearest = frame(index);
+        if direction == 1 && nearest <= current {
+            index += 1.;
+        }
+        if direction == -1 && nearest >= current {
+            index -= 1.;
+        }
+        Ok(frame(index).clamp(0, i128::from(last)) as u64)
+    }
     pub fn nearest_quantized_frame(
         self,
         position: Duration,
@@ -545,6 +657,26 @@ impl BeatGrid {
     ) -> Result<usize, String> {
         self.quantized_frame(position, rate, step, false)
     }
+    /// First strictly later downbeat in source frames, including changed meters and warp markers.
+    pub(crate) fn next_bar_frame(self, position: Duration, rate: u32) -> Result<usize, String> {
+        if rate == 0 {
+            return Err("Sample rate must be positive".into());
+        }
+        let current_frame = (position.as_nanos() * u128::from(rate)) / 1_000_000_000;
+        let (bar, _) = self.bar_at_beat(self.beat_at_time(position.as_secs_f64()));
+        for advance in [1, 2] {
+            let next = bar.checked_add(advance).ok_or("Bar number overflow")?;
+            let nanos = self.time_at_beat_nanos(self.bar_start_beat_signed(next));
+            let frame = (nanos * i128::from(rate) + 500_000_000).div_euclid(1_000_000_000);
+            if let Ok(frame) = usize::try_from(frame) {
+                if frame as u128 > current_frame {
+                    return Ok(frame);
+                }
+            }
+        }
+        Err("Next bar is outside the playable frame range".into())
+    }
+
     /// Strictly later representable source frame on the selected anchored lattice.
     pub fn next_quantized_frame(
         self,

@@ -1,0 +1,23 @@
+import { DjTheme } from "theme.slint";
+import { LibraryButton } from "controls.slint";
+export component SourceMonitorWindow inherits Window {
+    title: "Source monitor"; preferred-width: 490px; preferred-height: 175px;
+    min-width: 340px; min-height: 145px; background: DjTheme.app-bg;
+    in property <int> selected;
+    in property <string> reading;
+    callback select-source(int);
+    callback dismiss();
+    VerticalLayout {
+        padding: 14px; spacing: 8px;
+        HorizontalLayout {
+            spacing: 6px;
+            for name[i] in ["Deck A", "Deck B", "Master"]: LibraryButton {
+                text: name; active: root.selected == i; clicked => { root.select-source(i); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            LibraryButton { text: "Close"; clicked => { root.dismiss(); } }
+        }
+        Text { text: (root.selected == 2 ? "Master mix" : root.selected == 1 ? "Deck B · pre-fader" : "Deck A · pre-fader") + " · 8.25 s analysis window"; color: DjTheme.text-secondary; wrap: word-wrap; }
+        Text { text: root.reading; color: DjTheme.text-primary; wrap: word-wrap; accessible-role: text; }
+    }
+}

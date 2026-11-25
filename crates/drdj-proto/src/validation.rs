@@ -25,6 +25,13 @@ fn finite(value: f64, field: &str) -> Result<(), ProtoError> {
     }
 }
 
+fn canonical_camelot(value: &str) -> bool {
+    matches!(
+        value.as_bytes(),
+        [b'1'..=b'9', b'A' | b'B'] | [b'1', b'0'..=b'2', b'A' | b'B']
+    )
+}
+
 fn prefix(error: ProtoError, parent: &str) -> ProtoError {
     match error {
         ProtoError::Validation { field, reason } => ProtoError::Validation {
@@ -219,12 +226,7 @@ contract!(AnalysisMessage, self, {
     if !(0.1..=4.0).contains(&self.gain) {
         return Err(invalid("gain", "native gain must be 0.1 through 4"));
     }
-    if !self.musical_key.is_empty()
-        && !matches!(
-            self.musical_key.as_bytes(),
-            [b'1'..=b'9', b'A' | b'B'] | [b'1', b'0'..=b'2', b'A' | b'B']
-        )
-    {
+    if !self.musical_key.is_empty() && !canonical_camelot(&self.musical_key) {
         return Err(invalid("musical_key", "invalid Camelot key"));
     }
     if self.file_path.chars().count() > 32768 {
@@ -245,6 +247,19 @@ contract!(AnalysisMessage, self, {
     Ok(())
 });
 contract!(NativeMetadataMessage, self, {
+    if self
+        .confirmed_key
+        .as_deref()
+        .is_some_and(|key| !canonical_camelot(key))
+    {
+        return Err(invalid("confirmed_key", "invalid confirmed Camelot key"));
+    }
+    if self
+        .dj_energy
+        .is_some_and(|energy| !(1..=10).contains(&energy))
+    {
+        return Err(invalid("dj_energy", "expected a DJ rating from 1 to 10"));
+    }
     if self.duration_ms.is_some_and(|v| v > 604_800_000)
         || (self.duration_exact && self.duration_ms.is_none())
     {

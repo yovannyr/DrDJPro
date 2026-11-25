@@ -214,6 +214,8 @@ Die folgenden Anforderungen ergänzen die oben genannten Library-Funktionen. Ob 
 
 **AC-R04** Eine bytegleiche Kopie unter anderem Namen, ein Radio- und ein Extended-Edit desselben Titels sowie zwei gleich große Dateien mit unterschiedlichem Inhalt importieren. Nur die Kopie wird als exakt ausgewiesen. Die Edits bleiben einzeln auswählbar. Abbruch und ein erneuter Scan erhalten Dateien, Cues und Crate-Zuordnungen. Eine unlesbare Datei darf keinen bestätigten Treffer erzeugen.
 
+Die [Anleitung und die Windows-Messwerte](R04_ABNAHME.md) beschreiben die Bedienung und den Lastvergleich mit zwei laufenden Decks.
+
 ### R05
 
 **Herkunft abweichender BPM- und Tonartwerte.** FR-009 umfasst die Metadatenbearbeitung. [Spec 21](../21-track-preparation/spec.md) fordert manuelle Korrekturen und Reanalyse. Der [Metadatenleser](../../../src/track_metadata.rs) ist eine Grundlage für die hier geforderte Anzeige der einzelnen Quellen.

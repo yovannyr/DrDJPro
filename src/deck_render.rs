@@ -41,6 +41,7 @@ struct Settings {
     trigger_serial: u64,
     trigger_at: u64,
     trigger_units: u64,
+    section_jump: bool,
     scratch: bool,
     scratch_serial: u64,
     scratch_target: u64,
@@ -83,13 +84,17 @@ pub(crate) struct RenderControl {
     seek_units: AtomicU64,
     trigger_serial: AtomicU64,
     completed_trigger: AtomicU64,
+    completed_section_jump: AtomicU64,
     trigger_at: AtomicU64,
     trigger_units: AtomicU64,
+    section_jump: AtomicBool,
     phase_units: AtomicU64,
     stamp_sequence: AtomicU64,
     stamp_phase: AtomicU64,
     stamp_frame: AtomicU64,
     stamp_command: AtomicU64,
+    // A paused deck can temporarily drive the same output chain for scratching.
+    pub output_enabled: AtomicBool,
     pub stopped: AtomicBool,
     last_sample: Arc<[AtomicU32; 2]>,
 }
@@ -145,13 +150,16 @@ impl RenderControl {
             applied_seek: AtomicU64::new(0),
             trigger_serial: AtomicU64::new(0),
             completed_trigger: AtomicU64::new(0),
+            completed_section_jump: AtomicU64::new(0),
             trigger_at: AtomicU64::new(0),
             trigger_units: AtomicU64::new(0),
+            section_jump: AtomicBool::new(false),
             phase_units: AtomicU64::new(0),
             stamp_sequence: AtomicU64::new(0),
             stamp_phase: AtomicU64::new(0),
             stamp_frame: AtomicU64::new(0),
             stamp_command: AtomicU64::new(0),
+            output_enabled: AtomicBool::new(playing),
             stopped: AtomicBool::new(false),
             last_sample: previous.map_or_else(
                 || Arc::new([const { AtomicU32::new(0) }; 2]),
@@ -325,7 +333,26 @@ impl RenderControl {
         self.censor.load(Ordering::SeqCst)
     }
     pub fn schedule_trigger(&self, at_frame: usize, target_frame: usize) {
+        self.schedule_jump(at_frame, target_frame, false);
+    }
+    pub(crate) fn schedule_section_jump(&self, at_frame: usize, target_frame: usize) -> u64 {
+        self.schedule_jump(at_frame, target_frame, true)
+    }
+    pub(crate) fn section_jump_status(&self, serial: u64) -> crate::playback::SectionJumpStatus {
+        use crate::playback::SectionJumpStatus;
+        if self.completed_section_jump.load(Ordering::Acquire) == serial {
+            SectionJumpStatus::Executed
+        } else if self.trigger_serial.load(Ordering::SeqCst) == serial
+            && self.trigger_at.load(Ordering::SeqCst) != 0
+        {
+            SectionJumpStatus::Pending
+        } else {
+            SectionJumpStatus::Cancelled
+        }
+    }
+    fn schedule_jump(&self, at_frame: usize, target_frame: usize, section: bool) -> u64 {
         self.sequence.fetch_add(1, Ordering::SeqCst);
+        self.section_jump.store(section, Ordering::SeqCst);
         self.trigger_at.store(
             at_frame as u64 * u64::from(self.format.output_rate),
             Ordering::SeqCst,
@@ -334,8 +361,12 @@ impl RenderControl {
             target_frame as u64 * u64::from(self.format.output_rate),
             Ordering::SeqCst,
         );
-        self.trigger_serial.fetch_add(1, Ordering::SeqCst);
+        let serial = self
+            .trigger_serial
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
         self.sequence.fetch_add(1, Ordering::SeqCst);
+        serial
     }
     fn publish_guarded(
         &self,
@@ -407,6 +438,7 @@ impl RenderControl {
             trigger_serial: self.trigger_serial.load(Ordering::SeqCst),
             trigger_at: self.trigger_at.load(Ordering::SeqCst),
             trigger_units: self.trigger_units.load(Ordering::SeqCst),
+            section_jump: self.section_jump.load(Ordering::SeqCst),
             scratch: self.scratch.load(Ordering::SeqCst),
             scratch_serial: self.scratch_serial.load(Ordering::SeqCst),
             scratch_target: self.scratch_target.load(Ordering::SeqCst),
@@ -432,6 +464,16 @@ impl RenderControl {
         (self.stamp_sequence.load(Ordering::SeqCst) == first
             && self.sequence.load(Ordering::SeqCst) == command)
             .then_some(stamp)
+    }
+    /// An explicit seek to the end pauses output, but its final frame still needs a render stamp.
+    pub(crate) fn pending_terminal_seek(&self) -> bool {
+        let command = self.sequence.load(Ordering::SeqCst);
+        let end = self.format.frames as u64 * u64::from(self.format.output_rate);
+        command & 1 == 0
+            && self.seek_units.load(Ordering::SeqCst) == end
+            && self.seek_serial.load(Ordering::SeqCst) != self.applied_seek.load(Ordering::Acquire)
+            && self.paused.load(Ordering::SeqCst)
+            && self.sequence.load(Ordering::SeqCst) == command
     }
     pub fn stamped_position(&self, stamp: RenderStamp) -> Duration {
         self.time_at(u128::from(stamp.phase_units))
@@ -479,16 +521,75 @@ impl RenderControl {
 fn wrap_units(phase: u128, region: Option<FrameLoop>, format: RenderFormat) -> u128 {
     if let Some(region) = region {
         let start = region.start as u128 * u128::from(format.output_rate);
-        let length = (region.end - region.start) as u128 * u128::from(format.output_rate);
+        let end = region.end as u128 * u128::from(format.output_rate);
         if phase < start {
             start
+        } else if phase < end {
+            phase
         } else {
-            start + (phase - start) % length
+            start + (phase - start) % (end - start)
         }
     } else {
         phase.min(format.frames as u128 * u128::from(format.output_rate))
     }
 }
+
+/// Interleaved PCM channels share a source position for the whole output frame.
+#[derive(Default)]
+struct PcmRead {
+    frame: usize,
+    next: usize,
+    fraction: f64,
+}
+
+impl PcmRead {
+    fn new(phase: u64, rate: u32, frames: usize, region: Option<FrameLoop>) -> Self {
+        let frame = (phase / u64::from(rate)) as usize;
+        let following = frame + 1;
+        let next = match region {
+            Some(region) if following >= region.end => region.start,
+            Some(_) => following,
+            None => following.min(frames - 1),
+        };
+        let fraction = (phase % u64::from(rate)) as f64 / f64::from(rate);
+        Self {
+            frame,
+            next,
+            fraction,
+        }
+    }
+
+    fn sample(&self, samples: &PcmSource, channel: u16) -> f32 {
+        let a = f64::from(samples.sample_at(self.frame, channel));
+        let b = f64::from(samples.sample_at(self.next, channel));
+        (a + (b - a) * self.fraction) as f32
+    }
+}
+
+/// Both heads advance for 12 ms of output time. The first mixed frame is entirely
+/// the outgoing passage, the last entirely the selected target.
+pub(crate) fn section_jump_fade_frames(output_rate: u32) -> u32 {
+    (u64::from(output_rate) * 12 / 1000).max(2) as u32
+}
+
+#[derive(Clone, Copy)]
+struct SectionFade {
+    phase: u128,
+    elapsed: u32,
+    frames: u32,
+}
+impl SectionFade {
+    fn blend(self, outgoing: f32, incoming: f32) -> f32 {
+        let weight = self.elapsed as f32 / (self.frames - 1) as f32;
+        outgoing * (1. - weight) + incoming * weight
+    }
+    fn advance(&mut self, source_step: u32) -> bool {
+        self.phase += u128::from(source_step);
+        self.elapsed += 1;
+        self.elapsed >= self.frames
+    }
+}
+
 struct Handoff {
     previous: Arc<RenderControl>,
     offsets: [f32; 2],
@@ -497,6 +598,7 @@ struct Handoff {
     seek_serial: u64,
 }
 pub(crate) struct DeckRenderer {
+    section_fade: Option<SectionFade>,
     censor_serial: u64,
     // Audible reverse head is private to the render thread. `phase` stays authoritative.
     reverse_phase: u128,
@@ -517,6 +619,8 @@ pub(crate) struct DeckRenderer {
     keylock_rate: u32,
     micro: drdj_keylock::micro::MicroStretch,
     keylock_frame: [f32; 2],
+    pcm_read: PcmRead,
+    end_units: u128,
     samples: PcmSource,
     control: Arc<RenderControl>,
     settings: Settings,
@@ -554,10 +658,13 @@ impl DeckRenderer {
             external_fade_frames: (rate / 200).max(2),
             external_offsets: [0.; 2],
             handoff: None,
+            section_fade: None,
             keylock: None,
             keylock_rate: rate,
             micro: drdj_keylock::micro::MicroStretch::new(rate),
             keylock_frame: [0.; 2],
+            pcm_read: PcmRead::default(),
+            end_units: control.format.frames as u128 * u128::from(rate),
             samples,
             control,
             settings,
@@ -629,6 +736,14 @@ impl DeckRenderer {
             self.settings = settings;
         }
         let settings = self.settings;
+        if settings.paused
+            || settings.scratch
+            || settings.external
+            || settings.censor
+            || settings.seek_serial != prior_seek
+        {
+            self.section_fade = None;
+        }
         if settings.scratch_serial != self.scratch_serial {
             self.scratch_serial = settings.scratch_serial;
             if settings.external && settings.scratch {
@@ -718,9 +833,19 @@ impl DeckRenderer {
             && self.applied_trigger != settings.trigger_serial
             && self.phase >= u128::from(settings.trigger_at)
         {
+            self.section_fade = settings.section_jump.then_some(SectionFade {
+                phase: self.phase,
+                elapsed: 0,
+                frames: section_jump_fade_frames(self.output_rate),
+            });
             self.phase = u128::from(settings.trigger_units);
             self.applied_trigger = settings.trigger_serial;
             self.publish_position();
+            if settings.section_jump {
+                self.control
+                    .completed_section_jump
+                    .store(settings.trigger_serial, Ordering::Release);
+            }
             self.control
                 .completed_trigger
                 .store(settings.trigger_serial, Ordering::Release);
@@ -758,7 +883,7 @@ impl Iterator for DeckRenderer {
         } else {
             self.settings.rate
         };
-        let end = self.samples.frames() as u128 * u128::from(self.output_rate);
+        let end = self.end_units;
         let scratch = self.settings.scratch;
         let censor = self.settings.censor && !scratch;
         let audible_phase = if censor {
@@ -820,25 +945,44 @@ impl Iterator for DeckRenderer {
                     }
                     return self.keylock_frame[usize::from(channel)];
                 }
-                let frame = (audible_phase / u128::from(self.output_rate)) as usize;
-                let next = self.settings.region.filter(|_| !scratch).map_or(
-                    (frame + 1).min(self.samples.frames() - 1),
-                    |r| {
-                        if frame + 1 >= r.end {
-                            r.start
-                        } else {
-                            frame + 1
-                        }
-                    },
-                );
-                let fraction = (audible_phase % u128::from(self.output_rate)) as f64
-                    / f64::from(self.output_rate);
-                let a = f64::from(self.samples.sample_at(frame, channel));
-                let b = f64::from(self.samples.sample_at(next, channel));
-                (a + (b - a) * fraction) as f32
+                if self.channel == 0 {
+                    // The format bounds the normal, reverse and scratch heads to
+                    // u64 units. Keep additions and loop overshoot in u128.
+                    self.pcm_read = PcmRead::new(
+                        audible_phase as u64,
+                        self.output_rate,
+                        self.control.format.frames,
+                        if scratch { None } else { self.settings.region },
+                    );
+                }
+                self.pcm_read.sample(&self.samples, channel)
             })
         };
         let mut value = value;
+        if let Some(fade) = self.section_fade {
+            let inputs = self.samples.channels();
+            let channel = if inputs == 1 && self.channel == 1 {
+                0
+            } else {
+                self.channel
+            };
+            if channel < inputs {
+                let pos = fade.phase as f64 / f64::from(self.output_rate);
+                let i = pos as usize;
+                let old = if i >= self.control.format.frames {
+                    0.
+                } else if let Some(clip) = &self.keylock {
+                    clip.sample_at_source(pos, channel)
+                } else {
+                    let a = self.samples.sample_at(i, channel);
+                    let b = self
+                        .samples
+                        .sample_at((i + 1).min(self.control.format.frames - 1), channel);
+                    a + (b - a) * (pos - i as f64) as f32
+                };
+                value = fade.blend(old, value);
+            }
+        }
         if self.settings.external && self.external_fade > 0 && !paused && !finished {
             if let Some(offset) = self.external_offsets.get_mut(usize::from(self.channel)) {
                 if self.external_fade == self.external_fade_frames {
@@ -878,6 +1022,13 @@ impl Iterator for DeckRenderer {
         }
         self.channel += 1;
         if self.channel == self.output_channels {
+            if self
+                .section_fade
+                .as_mut()
+                .is_some_and(|fade| fade.advance(applied_rate))
+            {
+                self.section_fade = None;
+            }
             if let Some(handoff) = &mut self.handoff {
                 handoff.elapsed = handoff.elapsed.saturating_add(1).min(handoff.frames);
             }
@@ -952,6 +1103,193 @@ impl Source for DeckRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pcm_channels_match_wide_interpolation_across_rates_loop_wrap_and_eof() {
+        const FRAMES: usize = 7;
+        let rate = 48_000;
+        for channels in [1_u16, 2, 3] {
+            let pcm: Vec<_> = (0..FRAMES * usize::from(channels))
+                .map(|i| {
+                    if i == 0 {
+                        -0.0
+                    } else {
+                        (i as f32 * 0.37).cos()
+                    }
+                })
+                .collect();
+            for step in [44_100, 96_000] {
+                for region in [None, Some(FrameLoop { start: 1, end: 6 })] {
+                    let control = RenderControl::new(
+                        step,
+                        true,
+                        region,
+                        SeekFrame {
+                            time: Duration::ZERO,
+                            frame: 0,
+                        },
+                        RenderFormat {
+                            source_rate: 44_100,
+                            output_rate: rate,
+                            frames: FRAMES,
+                        },
+                    );
+                    let mut renderer = DeckRenderer::new(
+                        PcmSource::new(channels, 44_100, pcm.clone()),
+                        control,
+                        4,
+                        rate,
+                    );
+                    let scale = u128::from(rate);
+                    let mut phase = region.map_or(0, |r| r.start as u128 * scale);
+                    for _ in 0..24 {
+                        let frame = (phase / scale) as usize;
+                        let fraction = (phase % scale) as f64 / f64::from(rate);
+                        for channel in 0..4 {
+                            let input = if channels == 1 && channel == 1 {
+                                0
+                            } else {
+                                channel
+                            };
+                            let expected = if frame >= FRAMES || input >= channels {
+                                0.
+                            } else {
+                                let next = match region {
+                                    Some(r) if frame + 1 == r.end => r.start,
+                                    _ => (frame + 1).min(FRAMES - 1),
+                                };
+                                let sample = |i| {
+                                    f64::from(pcm[i * usize::from(channels) + usize::from(input)])
+                                };
+                                let a = sample(frame);
+                                (a + (sample(next) - a) * fraction) as f32
+                            };
+                            assert_eq!(renderer.next().unwrap().to_bits(), expected.to_bits());
+                        }
+                        phase += u128::from(step);
+                        if let Some(r) = region {
+                            let start = r.start as u128 * scale;
+                            phase = start + (phase - start) % ((r.end - r.start) as u128 * scale);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pcm_read_large_positions_and_wide_loop_overshoot_match_reference() {
+        let output_rate = 48_000;
+        let scale = u128::from(output_rate);
+        let frames = usize::try_from(u64::MAX / u64::from(output_rate)).unwrap_or(usize::MAX);
+        let end = frames as u128 * scale;
+        let format = RenderFormat {
+            source_rate: 44_100,
+            output_rate,
+            frames,
+        };
+        let region = FrameLoop {
+            start: frames - 5,
+            end: frames - 1,
+        };
+        let start = region.start as u128 * scale;
+        let length = (region.end - region.start) as u128 * scale;
+        for phase in [
+            start - 1,
+            start,
+            start + 1,
+            start + length - 1,
+            start + length,
+            end,
+            u128::MAX,
+        ] {
+            let expected = if phase < start {
+                start
+            } else {
+                start + (phase - start) % length
+            };
+            let wrapped = wrap_units(phase, Some(region), format);
+            assert_eq!(wrapped, expected);
+            assert_eq!(wrap_units(phase, None, format), phase.min(end));
+            let read = PcmRead::new(
+                u64::try_from(wrapped).unwrap(),
+                output_rate,
+                frames,
+                Some(region),
+            );
+            let frame = (expected / scale) as usize;
+            assert_eq!(read.frame, frame);
+            assert_eq!(
+                read.next,
+                if frame + 1 == region.end {
+                    region.start
+                } else {
+                    frame + 1
+                }
+            );
+            assert_eq!(
+                read.fraction,
+                (expected % scale) as f64 / f64::from(output_rate)
+            );
+        }
+    }
+
+    #[test]
+    fn d06_quantized_jump_blends_exactly_twelve_ms_and_cancels_without_seeking() {
+        use crate::playback::SectionJumpStatus;
+        let mut pcm = vec![0.5; 18_000];
+        pcm[12_000..].fill(-0.5);
+        let control = RenderControl::new(
+            48_000,
+            true,
+            None,
+            SeekFrame {
+                time: Duration::ZERO,
+                frame: 0,
+            },
+            RenderFormat {
+                source_rate: 48_000,
+                output_rate: 48_000,
+                frames: pcm.len(),
+            },
+        );
+        let mut audio = DeckRenderer::new(
+            PcmSource::new(1, 48_000, pcm),
+            Arc::clone(&control),
+            1,
+            48_000,
+        );
+        let cancelled = control.schedule_section_jump(960, 12_000);
+        control.cancel_trigger();
+        assert_eq!(
+            control.section_jump_status(cancelled),
+            SectionJumpStatus::Cancelled
+        );
+        let ticket = control.schedule_section_jump(1_920, 12_000);
+        assert!(audio.by_ref().take(1_920).all(|v| (v - 0.5).abs() < 0.0001));
+        assert_eq!(
+            control.section_jump_status(ticket),
+            SectionJumpStatus::Pending
+        );
+        let mut signal = [0.; 577];
+        let allocations = crate::looping::counted_allocations(|| {
+            for v in &mut signal {
+                *v = audio.next().unwrap();
+            }
+        });
+        assert_eq!(allocations, 0);
+        for (i, &v) in signal[..576].iter().enumerate() {
+            assert!(
+                (v - (0.5 - i as f32 / 575.)).abs() < 0.0001,
+                "sample {i}, amplitude {v}"
+            );
+        }
+        assert_eq!(signal[576], -0.5);
+        assert_eq!(
+            control.section_jump_status(ticket),
+            SectionJumpStatus::Executed
+        );
+    }
     #[test]
     fn dvs_absolute_targets_seek_dezipper_and_preserve_manual_takeover_without_allocations() {
         let pcm = PcmSource::new(

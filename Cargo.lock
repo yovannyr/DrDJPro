@@ -1732,6 +1732,7 @@ dependencies = [
 name = "drdjpro-ui-spike"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "aes-gcm",
  "backtrace",
  "base64 0.23.1",

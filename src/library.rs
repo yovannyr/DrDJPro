@@ -1,4 +1,8 @@
 //! Session library state. File inspection runs on the control worker, not the UI/audio thread.
+pub(crate) mod gigs;
+pub(crate) mod import_review;
+mod planning;
+pub(crate) use planning::PlanningCatalog;
 pub mod protobuf;
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -16,6 +20,8 @@ pub const MAX_PREP: usize = 5_000;
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Catalog {
+    #[serde(skip)]
+    pub gigs: gigs::GigBook,
     pub version: u32,
     pub tracks: Vec<SavedTrack>,
     #[serde(skip)]
@@ -47,6 +53,7 @@ pub struct SavedTrack {
     pub saved_loops: crate::saved_loops::SavedLoops,
 }
 pub struct CatalogDelta {
+    pub gigs: gigs::GigDelta,
     pub prep_queue: Option<Vec<i32>>,
     pub revision: u64,
     pub tracks: Vec<SavedTrack>,
@@ -99,6 +106,7 @@ impl Catalog {
                 return Err("Invalid playback history entry".into());
             }
         }
+        self.gigs.validate(&ids)?;
         self.crates.validate(&ids)
     }
 }
@@ -117,6 +125,15 @@ pub struct ImportBatch {
     pub paths: Vec<PathBuf>,
     pub metadata: Vec<(PathBuf, crate::track_metadata::TrackMetadata)>,
     pub rejected: usize,
+    pub(crate) review: ImportEvidence,
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct ImportEvidence {
+    pub findings: Vec<import_review::ImportFinding>,
+    pub unavailable: Vec<(PathBuf, String)>,
+    pub stamps: Vec<Option<import_review::Stamp>>,
+    pub catalog_revision: Option<u64>,
 }
 #[cfg(test)]
 pub fn inspect_paths(paths: Vec<PathBuf>) -> ImportBatch {
@@ -132,13 +149,45 @@ pub(crate) fn inspect_paths_cancellable(
 pub(crate) fn inspect_files(
     paths: Vec<PathBuf>,
     cancel: &crate::cancellation::Cancellation,
-    _analyze_import: bool,
+    importing: bool,
 ) -> Result<ImportBatch, String> {
+    read_files(
+        paths,
+        cancel,
+        if importing {
+            Inspection::Import
+        } else {
+            Inspection::Maintenance
+        },
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Inspection {
+    Import,
+    ReviewHeaders,
+    Maintenance,
+}
+
+pub(crate) fn inspect_review_headers(
+    paths: Vec<PathBuf>,
+    cancel: &crate::cancellation::Cancellation,
+) -> Result<ImportBatch, String> {
+    read_files(paths, cancel, Inspection::ReviewHeaders)
+}
+
+fn read_files(
+    paths: Vec<PathBuf>,
+    cancel: &crate::cancellation::Cancellation,
+    mode: Inspection,
+) -> Result<ImportBatch, String> {
+    let importing = mode != Inspection::Maintenance;
     cancel.check()?;
     let mut result = ImportBatch {
         paths: Vec::new(),
         metadata: Vec::new(),
         rejected: paths.len().saturating_sub(MAX_IMPORT),
+        review: Default::default(),
     };
     for path in paths.into_iter().take(MAX_IMPORT) {
         cancel.check()?;
@@ -150,34 +199,65 @@ pub(crate) fn inspect_files(
                     result.rejected += 1;
                     continue;
                 }
-                let metadata = crate::track_metadata::read_cancellable(&path, cancel)?;
-                #[cfg(feature = "ml-import")]
-                let metadata = if _analyze_import
-                    && (crate::import_inference::configured().is_some()
-                        || std::env::var_os("DRDJ_BEAT_MODELS").is_some()
-                        || std::env::var_os("DRDJ_STEM_MODELS").is_some())
-                {
-                    let mut metadata = metadata;
-                    match crate::audio_analyzer::AudioAnalyzer::analyze_cancellable(&path, cancel) {
-                        Ok(analysis) if analysis.validate() => metadata.analysis = Some(analysis),
-                        Err(crate::audio_analyzer::AnalyzerError::Cancelled) => {
-                            return Err("Operation cancelled".into())
-                        }
-                        _ => log::warn!("Optional analysis unavailable for imported track"),
-                    }
-                    metadata
-                } else {
-                    metadata
-                };
+                let stamp = importing
+                    .then(|| import_review::Stamp::at(&path).ok())
+                    .flatten();
+                let (mut metadata, readable) =
+                    crate::track_metadata::probe_cancellable(&path, cancel)?;
+                if importing && !readable {
+                    result.review.unavailable.push((
+                        path.clone(),
+                        format!(
+                            "No readable audio track: {}",
+                            metadata.error.as_deref().unwrap_or("invalid media")
+                        ),
+                    ));
+                }
+                if mode == Inspection::Import && readable {
+                    analyze_import_metadata(&path, &mut metadata, cancel)?;
+                }
                 result.metadata.push((path.clone(), metadata));
+                result.review.stamps.push(stamp);
                 result.paths.push(path);
             }
-            _ => result.rejected += 1,
+            _ => {
+                result.rejected += 1;
+                if supported && !crate::audio_formats::is_apple_double(&path) {
+                    result
+                        .review
+                        .unavailable
+                        .push((path, "Cannot open this path as a regular audio file".into()));
+                }
+            }
         }
     }
     cancel.check()?;
     Ok(result)
 }
+/// Preserves the optional A2 analysis on newly confirmed sources. Called on an import worker.
+pub(crate) fn analyze_import_metadata(
+    path: &Path,
+    metadata: &mut crate::track_metadata::TrackMetadata,
+    cancel: &crate::cancellation::Cancellation,
+) -> Result<(), String> {
+    #[cfg(feature = "ml-import")]
+    if crate::import_inference::configured().is_some()
+        || std::env::var_os("DRDJ_BEAT_MODELS").is_some()
+        || std::env::var_os("DRDJ_STEM_MODELS").is_some()
+    {
+        match crate::audio_analyzer::AudioAnalyzer::analyze_cancellable(path, cancel) {
+            Ok(analysis) if analysis.validate() => metadata.analysis = Some(analysis),
+            Err(crate::audio_analyzer::AnalyzerError::Cancelled) => {
+                return Err("Operation cancelled".into())
+            }
+            _ => log::warn!("Optional analysis unavailable for imported track"),
+        }
+    }
+    #[cfg(not(feature = "ml-import"))]
+    let _ = (path, metadata, cancel);
+    Ok(())
+}
+
 pub(crate) fn inspect_directory_cancellable(
     root: &Path,
     cancel: &crate::cancellation::Cancellation,
@@ -264,6 +344,10 @@ struct TrackSearch {
     album: String,
     name: String,
     path: String,
+    // Lower-case search text cannot reopen a case-sensitive or non-Unicode native path.
+    native_path: Option<PathBuf>,
+    /// Preserve display spelling when it differs from the normalized searchable text.
+    planning_title: Option<Box<str>>,
 }
 
 // A bounded, lossy trigram index. Collisions and obsolete metadata bits can
@@ -359,12 +443,21 @@ impl SearchIndex {
 
 impl Track {
     fn refresh_search(&mut self) {
+        let path = self.path.to_string_lossy().to_lowercase();
+        let title = self.metadata.title.to_lowercase();
+        let name = self.name.to_lowercase();
+        let normalized = if title.is_empty() { &name } else { &title };
+        let planning_title =
+            (normalized != self.display_title()).then(|| self.display_title().into());
         self.search = Arc::new(TrackSearch {
-            title: self.metadata.title.to_lowercase(),
+            title,
             artist: self.metadata.artist.to_lowercase(),
             album: self.metadata.album.to_lowercase(),
-            name: self.name.to_lowercase(),
-            path: self.path.to_string_lossy().to_lowercase(),
+            name,
+            planning_title,
+            native_path: (self.path.as_os_str() != std::ffi::OsStr::new(&path))
+                .then(|| self.path.clone()),
+            path,
         });
     }
 
@@ -390,10 +483,38 @@ struct SearchRecord {
     key: Option<(u8, bool)>,
     gain: Option<f32>,
     analysis_status: u8,
+    planning: planning::PlanningData,
 }
 
 const SEARCH_RECORD_CHUNK: usize = 256;
 type SearchRecordChunks = Arc<Vec<Arc<Vec<SearchRecord>>>>;
+
+/// Shares immutable catalog chunks with a worker without copying every path on the UI thread.
+#[derive(Clone)]
+pub(crate) struct ImportCatalog {
+    tracks: SearchRecordChunks,
+    pub revision: u64,
+}
+
+impl ImportCatalog {
+    pub fn references(&self) -> impl Iterator<Item = import_review::ImportReference> + '_ {
+        self.tracks
+            .iter()
+            .flat_map(|chunk| chunk.iter())
+            .map(|record| {
+                let s = &record.search;
+                import_review::ImportReference {
+                    path: s
+                        .native_path
+                        .clone()
+                        .unwrap_or_else(|| PathBuf::from(&s.path)),
+                    title: s.title.clone(),
+                    artist: s.artist.clone(),
+                    duration_ms: record.duration,
+                }
+            })
+    }
+}
 
 pub(crate) struct SearchProjection {
     tracks: SearchRecordChunks,
@@ -474,7 +595,12 @@ impl SearchProjection {
                 .collect(),
         };
         if let Some(history_order) = self.history_order.as_ref().filter(|_| spec.field == -1) {
-            matches.sort_by_key(|track| history_order[&track.id]);
+            matches.sort_by_key(|track| {
+                (
+                    history_order.get(&track.id).copied().unwrap_or(usize::MAX),
+                    track.id,
+                )
+            });
         } else {
             matches.sort_by(|a, b| a.compare(b, spec.field, spec.descending));
         }
@@ -623,6 +749,8 @@ impl Track {
 }
 #[derive(Default)]
 pub struct Library {
+    gig_book: gigs::GigBook,
+    gig_dirty: gigs::GigChanges,
     prep_queue: Vec<i32>,
     prep_members: HashSet<i32>,
     changed_prep: Option<u64>,
@@ -646,6 +774,8 @@ pub struct Library {
     selected: Option<i32>,
     sort_field: i32,
     sort_requested: bool,
+    crate_column_sort: bool,
+    saved_order: Option<Arc<HashMap<i32, usize>>>,
     analysis_revision: u64,
     descending: bool,
     crates: crate::crates::CrateCatalog,
@@ -667,6 +797,7 @@ impl Library {
         let track = &self.tracks[index];
         let record = SearchRecord {
             id: track.id,
+            planning: planning::PlanningData::from_track(track),
             search: Arc::clone(&track.search),
             has_title: !track.metadata.title.is_empty(),
             format: track.format.clone(),
@@ -777,13 +908,15 @@ impl Library {
         self.revision
     }
     pub fn has_changes(&self) -> bool {
-        self.changed_prep.is_some()
+        self.gig_dirty.has_changes()
+            || self.changed_prep.is_some()
             || !self.changed_tracks.is_empty()
             || !self.changed_crates.is_empty()
             || !self.changed_memberships.is_empty()
             || !self.changed_history.is_empty()
     }
     pub fn acknowledge(&mut self, revision: u64) {
+        self.gig_dirty.acknowledge(revision);
         if self.changed_prep.is_some_and(|changed| changed <= revision) {
             self.changed_prep = None;
         }
@@ -796,6 +929,7 @@ impl Library {
     }
     pub fn changes(&self) -> CatalogDelta {
         CatalogDelta {
+            gigs: self.gig_dirty.delta(&self.gig_book),
             prep_queue: self.changed_prep.map(|_| self.prep_queue.clone()),
             revision: self.revision,
             tracks: self
@@ -869,6 +1003,7 @@ impl Library {
         };
         self.history.insert(track_id, entry.clone());
         self.mark_history(track_id, Some(entry));
+        self.fulfill_gig(track_id, played_at_ms);
         if self.history.len() > MAX_HISTORY {
             let oldest = self
                 .history
@@ -1004,6 +1139,56 @@ impl Library {
             .map(|i| self.tracks[*i].hot_cues.clone())
             .unwrap_or_default()
     }
+    fn cue_trim_index(
+        &self,
+        id: i32,
+        path: &Path,
+        change: &crate::hot_cues::CueTrimChange,
+    ) -> Result<usize, String> {
+        let index = *self
+            .keys
+            .get(&identity(path))
+            .ok_or("Cue source is no longer in the library")?;
+        let track = &self.tracks[index];
+        if track.id != id {
+            return Err("Cue source changed. Reopen the cue editor.".into());
+        }
+        change.check(&track.hot_cues, track.grid)?;
+        Ok(index)
+    }
+
+    /// Check the draft against the in-memory track before submitting its guarded SQL update.
+    pub(crate) fn validate_cue_trim(
+        &self,
+        id: i32,
+        path: &Path,
+        change: &crate::hot_cues::CueTrimChange,
+    ) -> Result<(), String> {
+        self.cue_trim_index(id, path, change).map(|_| ())
+    }
+
+    /// Reflect the committed position, retaining unrelated pending changes on this track.
+    pub(crate) fn apply_committed_cue_trim(
+        &mut self,
+        id: i32,
+        path: &Path,
+        change: &crate::hot_cues::CueTrimChange,
+    ) -> Result<(), String> {
+        let index = self.cue_trim_index(id, path, change)?;
+        if change.original.position() != change.position {
+            self.tracks[index]
+                .hot_cues
+                .set(change.slot, Some(change.replacement()))?;
+            *self.view_cache.get_mut() = None;
+            self.update_planning_record(index);
+            self.revision = self
+                .revision
+                .checked_add(1)
+                .expect("Library revision overflow");
+        }
+        Ok(())
+    }
+
     pub fn set_hot_cue(
         &mut self,
         path: &Path,
@@ -1016,6 +1201,7 @@ impl Library {
             .ok_or("Track is not in the library")?;
         let index = *index;
         self.tracks[index].hot_cues.set(slot, cue)?;
+        self.update_planning_record(index);
         self.mark_track(index);
         Ok(())
     }
@@ -1035,8 +1221,31 @@ impl Library {
             .get(&identity(path))
             .ok_or("Track is not in the library")?;
         let index = *index;
+        if self.tracks[index]
+            .grid
+            .is_some_and(|saved| saved.is_locked())
+            && self.tracks[index].grid != grid
+        {
+            return Err("Beatgrid is locked; unlock it in Prepare".into());
+        }
         self.tracks[index].grid = grid;
+        self.update_planning_record(index);
         self.mark_track(index);
+        Ok(())
+    }
+    /// Reflect an explicitly saved change of the grid lock in the catalog.
+    pub fn set_grid_locked(&mut self, path: &Path, locked: bool) -> Result<(), String> {
+        let index = *self
+            .keys
+            .get(&identity(path))
+            .ok_or("Track is not in the library")?;
+        let grid = self.tracks[index]
+            .grid
+            .ok_or("Save a beatgrid before locking it")?;
+        if grid.is_locked() != locked {
+            self.tracks[index].grid = Some(grid.with_locked(locked));
+            self.mark_track(index);
+        }
         Ok(())
     }
     pub fn crates(&self) -> &crate::crates::CrateCatalog {
@@ -1044,6 +1253,29 @@ impl Library {
     }
     pub fn active_crate(&self) -> i32 {
         self.active_crate
+    }
+    /// A saved setlist orders the normal search projection, including filtered pages.
+    pub(crate) fn set_saved_order(&mut self, id: i32, order: Option<&[i32]>) -> bool {
+        if id <= 0 || self.active_crate != id {
+            return false;
+        }
+        let ranks = order.map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (*id, i))
+                .collect::<HashMap<_, _>>()
+        });
+        if self.saved_order.as_deref() == ranks.as_ref() {
+            return false;
+        }
+        self.saved_order = ranks.map(Arc::new);
+        self.search_revision = self
+            .search_revision
+            .checked_add(1)
+            .expect("Search revision overflow");
+        *self.view_cache.get_mut() = None;
+        true
     }
     pub fn prep_queue(&self) -> &[i32] {
         &self.prep_queue
@@ -1113,6 +1345,8 @@ impl Library {
         }
         if self.active_crate != id {
             self.active_crate = id;
+            self.saved_order = None;
+            self.crate_column_sort = false;
             self.missing_cache.set(None);
             *self.view_cache.get_mut() = None;
         }
@@ -1219,6 +1453,24 @@ impl Library {
         self.set_query(self.query.clone());
         Ok(removed)
     }
+    /// Update user-owned musical labels without changing the source or analysis.
+    pub fn set_music_labels(
+        &mut self,
+        id: i32,
+        labels: crate::track_metadata::MusicLabels,
+    ) -> Result<bool, String> {
+        let index = *self
+            .id_indices
+            .get(&id)
+            .ok_or("Select a library track first")?;
+        if self.tracks[index].metadata.music_labels == labels {
+            return Ok(false);
+        }
+        self.tracks[index].metadata.music_labels = labels;
+        self.update_planning_record(index);
+        self.mark_track_dirty(index);
+        Ok(true)
+    }
     pub fn set_metadata(
         &mut self,
         path: &Path,
@@ -1226,6 +1478,7 @@ impl Library {
     ) {
         if let Some(index) = self.keys.get(&identity(path)) {
             let index = *index;
+            metadata.music_labels = self.tracks[index].metadata.music_labels;
             metadata.retain_imported_tags(&self.tracks[index].metadata);
             if metadata.analysis.is_none() {
                 metadata.analysis = self.tracks[index].metadata.analysis.clone();
@@ -1272,7 +1525,7 @@ impl Library {
         &mut self,
         track_id: i32,
         path: PathBuf,
-        metadata: crate::track_metadata::TrackMetadata,
+        mut metadata: crate::track_metadata::TrackMetadata,
     ) -> Result<bool, String> {
         if !path.is_absolute()
             || !path.is_file()
@@ -1294,6 +1547,7 @@ impl Library {
             return Err("Replacement file already belongs to another library track".into());
         }
         let track = &self.tracks[index];
+        metadata.music_labels = track.metadata.music_labels;
         if track.path == path && track.available && track.metadata == metadata {
             return Ok(false);
         }
@@ -1326,6 +1580,7 @@ impl Library {
         catalog.validate()?;
         let history = catalog.history;
         let mut library = Self {
+            gig_book: catalog.gigs,
             prep_members: catalog.prep_queue.iter().copied().collect(),
             prep_queue: catalog.prep_queue,
             crates: catalog.crates,
@@ -1339,6 +1594,7 @@ impl Library {
             let enriched = available && saved.metadata.needs_refresh(&saved.path);
             let metadata = if enriched {
                 let mut metadata = crate::track_metadata::read(&saved.path);
+                metadata.music_labels = saved.metadata.music_labels;
                 metadata.retain_imported_tags(&saved.metadata);
                 metadata.analysis = saved.metadata.analysis;
                 metadata
@@ -1387,6 +1643,7 @@ impl Library {
         let mut history: Vec<_> = self.history.values().cloned().collect();
         history.sort_by_key(|entry| (std::cmp::Reverse(entry.last_played_ms), entry.track_id));
         Catalog {
+            gigs: self.gig_book.clone(),
             prep_queue: self.prep_queue.clone(),
             version: 1,
             crates: self.crates.clone(),
@@ -1574,6 +1831,7 @@ impl Library {
     }
     pub fn sort(&mut self, field: i32) {
         self.sort_requested = true;
+        self.crate_column_sort = self.active_crate > 0;
         *self.view_cache.get_mut() = None;
         let field = field.clamp(0, 10);
         if field == self.sort_field {
@@ -1599,6 +1857,7 @@ impl Library {
             query: self.query.clone(),
             smart_query,
             field: if self.active_crate == PREP_SCOPE
+                || (self.saved_order.is_some() && !self.crate_column_sort)
                 || (self.active_crate == HISTORY_SCOPE && !self.sort_requested)
             {
                 -1
@@ -1607,6 +1866,13 @@ impl Library {
             },
             descending: self.descending,
             page_index: 0,
+        }
+    }
+
+    pub(crate) fn import_catalog(&self) -> ImportCatalog {
+        ImportCatalog {
+            tracks: Arc::clone(&self.search_records),
+            revision: self.search_revision,
         }
     }
 
@@ -1647,7 +1913,7 @@ impl Library {
                         .cloned()
                         .unwrap_or_default()
                 }),
-                None,
+                self.saved_order.clone(),
             )
         };
         SearchProjection {
@@ -2264,6 +2530,7 @@ mod tests {
         let existing_path = existing.path().to_owned();
         let replacement_path = std::fs::canonicalize(replacement.path()).unwrap();
         let catalog = Catalog {
+            gigs: Default::default(),
             prep_queue: Vec::new(),
             version: 1,
             tracks: vec![
@@ -2492,6 +2759,7 @@ mod tests {
         let missing2 = dir.path().join("missing2.wav");
 
         let catalog = Catalog {
+            gigs: Default::default(),
             prep_queue: Vec::new(),
             version: 1,
             tracks: vec![

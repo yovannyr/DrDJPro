@@ -1,0 +1,143 @@
+import {Button, CheckBox, ComboBox, LineEdit, ListView} from "std-widgets.slint";
+import { DjTheme } from "theme.slint";
+export struct TimelineRow { label:string, position:float, fraction:float, missing:bool }
+export struct TimelineRange { label:string, left:float, span:float, valid:bool }
+component Caption inherits Text {color:DjTheme.text-secondary;vertical-alignment:center;}
+export component TimelineWindow inherits Window {
+    title:"Set timeline"; preferred-width: 890px;preferred-height: 690px;min-width:680px;min-height:570px;background:DjTheme.app-bg;
+    in property <[TimelineRow]> clips;
+    in property <int> selected:-1;
+    in property <string> project-name;
+    in property <bool> dirty;
+    in property <bool> busy;
+    in property <bool> has-route;
+    in property <string> status;
+    in-out property <string> tempo:"120";
+    in-out property <string> clip-at;
+    in-out property <string> source-at;
+    in-out property <string> length;
+    in-out property <string> native-bpm;
+    in property <string> source-path;
+    in-out property <string> first-beat;
+    in-out property <string> mark-in;
+    in-out property <string> mark-out;
+    in property <int> project-end;
+    pure callback describe-range(string,string,int) -> TimelineRange;
+    private property <TimelineRange> interval: root.describe-range(root.mark-in,root.mark-out,root.project-end);
+    in property <[string]> points;
+    in property <int> curve-index;
+    in property <int> point-index:-1;
+    in-out property <string> point-at;
+    in-out property <string> point-value;
+    private property <int> replace-action:-1;
+    callback project-file(int);
+    callback add-clip();
+    callback select-clip(int);
+    callback edit-clip();
+    callback remove-clip();
+    callback relink();
+    callback check-sources();
+    callback set-tempo();
+    callback select-curve(int);
+    callback select-point(int);
+    callback write-point();
+    callback remove-point();
+    callback mark-clip();
+    callback mark-overlap();
+    callback render(int,bool);
+    callback halt();
+    callback dismiss();
+    VerticalLayout {
+        padding:10px;spacing:6px;
+        HorizontalLayout {
+            spacing:5px;
+            Caption {text:root.project-name+(root.dirty ? " *" : "");horizontal-stretch:1;overflow:elide;}
+            Button {text:"New";enabled:!root.busy;clicked=>{if root.dirty {root.replace-action=0;}else{root.project-file(0);}}}
+            Button {text:"Open";enabled:!root.busy;clicked=>{if root.dirty {root.replace-action=1;}else{root.project-file(1);}}}
+            Button {text:"Save";enabled:!root.busy;clicked=>{root.project-file(2);}}
+            Button {text:"Save as";enabled:!root.busy;clicked=>{root.project-file(3);}}
+            Button {text:"Close";clicked=>{root.dismiss();}}
+        }
+        if root.replace-action>=0 : HorizontalLayout {
+            Caption {text:"Replace this unsaved project?"; horizontal-stretch:1;}
+            Button {text:"Keep editing";clicked=>{root.replace-action=-1;}}
+            Button {text:"Replace";enabled:!root.busy;clicked=>{root.project-file(root.replace-action);root.replace-action=-1;}}
+        }
+        HorizontalLayout {
+            spacing:5px;
+            Caption {text:"Project BPM";}
+            LineEdit {width:70px;text<=>root.tempo;accessible-label:"Project tempo";}
+            Button {text:"Set tempo";enabled:!root.busy;clicked=>{root.set-tempo();}}
+            Rectangle {horizontal-stretch:1;}
+            Button {text:"Add library track";enabled:!root.busy;clicked=>{root.add-clip();}}
+            Button {text:"Check sources";enabled:!root.busy;clicked=>{root.check-sources();}}
+        }
+        ListView {
+            for row[i] in root.clips : Rectangle {
+                height:29px;background:root.selected==i ? #284861 : #20252b;
+                Rectangle {x:row.position * parent.width; width:max(2px,row.fraction*parent.width);height:5px;y:parent.height - self.height;background:row.missing ? #ec8066 : #6fc4d5;}
+                Text { x:5px;width:parent.width - 10px;text:row.label;color:row.missing ? #ffb09d : DjTheme.text-primary;vertical-alignment:center;overflow:elide;}
+                accessible-role:button;accessible-label:row.label;accessible-action-default=>{if !root.busy {root.select-clip(i);}}
+                TouchArea {enabled:!root.busy;clicked=>{root.select-clip(i);}}
+            }
+        }
+        if root.selected>=0 : VerticalLayout {
+            spacing:4px;
+            HorizontalLayout {
+                spacing:4px;
+                Caption {text:"Source file";}
+                LineEdit {text:root.source-path;read-only:true;accessible-label:"Source recording path";}
+            }
+            HorizontalLayout {
+                spacing:4px;
+                Caption {text:"At (s)";} LineEdit {text<=>root.clip-at;accessible-label:"Project start seconds";}
+                Caption {text:"Source (s)";} LineEdit {text<=>root.source-at;accessible-label:"Source start seconds";}
+                Caption {text:"Length (s)";} LineEdit {text<=>root.length;accessible-label:"Output length seconds";}
+                Button {text:"Update clip";enabled:!root.busy;clicked=>{root.edit-clip();}}
+            }
+            HorizontalLayout {
+                spacing:4px;
+                Caption {text:"Source BPM";} LineEdit {text<=>root.native-bpm;placeholder-text:"Optional";accessible-label:"Source tempo";}
+                Caption {text:"First beat (s)";} LineEdit {text<=>root.first-beat;placeholder-text:"Optional";accessible-label:"First source beat seconds";}
+                Button {text:"Relink source";enabled:!root.busy;clicked=>{root.relink();}}
+                Button {text:"Remove clip";enabled:!root.busy;clicked=>{root.remove-clip();}}
+            }
+            HorizontalLayout {
+                spacing:4px;
+                curve:=ComboBox {model:["Level (dB)","Low EQ (dB)","Crossfader (0–1)"];current-index:root.curve-index;accessible-label:"Automation curve";selected=>{root.select-curve(self.current-index);}}
+                ComboBox {model:root.points;current-index:root.point-index;accessible-label:"Existing automation points";selected=>{root.select-point(self.current-index);}}
+                Button {text:"Delete point";enabled:!root.busy && root.point-index>=0;clicked=>{root.remove-point();}}
+            }
+            HorizontalLayout {
+                spacing:4px;
+                Caption {text:"Clip time (s)";} LineEdit {text<=>root.point-at;accessible-label:"Point time relative to clip";}
+                Caption {text:"Value";} LineEdit {text<=>root.point-value;accessible-label:"Automation value";}
+                Button {text:"Set point";enabled:!root.busy;clicked=>{root.write-point();}}
+            }
+        }
+        HorizontalLayout {
+            spacing:4px;
+            Caption {text:"Mix in (s)";} LineEdit {text<=>root.mark-in;placeholder-text:"0";accessible-label:"Export interval start";}
+            Caption {text:"Mix out (s)";} LineEdit {text<=>root.mark-out;placeholder-text:"Project end";accessible-label:"Export interval end";}
+            Button {text:"Mark clip";enabled:!root.busy && root.selected>=0;clicked=>{root.mark-clip();}}
+            Button {text:"Mark overlap";enabled:!root.busy && root.selected>=0;clicked=>{root.mark-overlap();}}
+        }
+        HorizontalLayout {
+            spacing:5px;
+            Caption {text:root.interval.label;accessible-role:text;accessible-label:"Marked interval and duration";}
+            Rectangle {height:8px;horizontal-stretch:1;background:#29333d;
+                Rectangle {x:root.interval.left * parent.width;width:root.interval.span * parent.width;background:#6fc4d5;}
+            }
+        }
+        HorizontalLayout {
+            spacing:5px;
+            Button {text:"Hear first 16 s";enabled:!root.busy && root.has-route && root.interval.valid;clicked=>{root.render(0,false);}}
+            Button {text:"Export WAV";enabled:!root.busy && root.interval.valid;clicked=>{root.render(1,false);}}
+            Button {text:"Export video";enabled:!root.busy && root.interval.valid;clicked=>{root.render(2,motion.checked);}}
+            motion:=CheckBox {text:"Beat animation";checked:true;}
+            Button {text:"Stop / cancel";clicked=>{root.halt();}}
+        }
+        if !root.has-route : Caption {text:"A separate headphone output is needed for audition.";}
+        Caption {text:root.status;wrap:word-wrap;accessible-role:text;accessible-label:"Timeline status";accessible-description:self.text;}
+    }
+}

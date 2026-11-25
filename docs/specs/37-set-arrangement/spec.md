@@ -1,6 +1,8 @@
 # Spec 37 – Set-Arrangement und Offline-Export
 
-**Status:** Geplant. Die Abnahmen sind offen. [Priorisierter Umsetzungsplan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md)
+**Stand 24. November 2026.** Arrangement, WAV-Export und Videoauszug sind im Feature-Branch unter **Prepare → Set planning → Timeline** angeschlossen. Testergebnisse, Messbedingungen und offene Gegenproben stehen im [Prüfbericht zu den 35 Funktionen](../MUSIKVORBEREITUNG_ABSCHLUSSPRUEFUNG.md). [Umsetzungsplan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md)
+
+Ein Projekt speichert die Bearbeitung als `.drdjset` und verweist auf die Musikdateien. Die Renderzeitbasis beträgt 48 kHz. Der WAV-Export schreibt Stereo-PCM mit 16 Bit. Die Kopfhörervorschau umfasst bis zu 16 Sekunden. Der MP4-Export verwendet denselben Audiomix und ein lokales FFmpeg mit H.264- und AAC-Encoder. Er erstellt 30 Bilder pro Sekunde. Für zehn Minuten Video belegt das temporäre Stereo-Audio rund 110 MiB zuzüglich der Zieldatei. Für das Bild ist jeweils der zuletzt einsetzende aktive Clip maßgeblich.
 
 Ein DJ bereitet einen Radiomix aus drei lokalen Titeln vor. Er setzt zwei Übergänge, hört das Ergebnis ab, speichert das Projekt und exportiert später denselben Mix. Für eine Ankündigung wählt er 30 Sekunden daraus und erstellt ein Video mit dem jeweiligen Cover.
 

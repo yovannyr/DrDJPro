@@ -1,0 +1,64 @@
+import { Button, ComboBox, ListView, SpinBox } from "std-widgets.slint";
+import { DjTheme } from "theme.slint";
+
+export component SceneScalePanel inherits Rectangle {
+    in property <[string]> scale-rows;
+    in property <[string]> scale-issues;
+    in property <string> scale-status;
+    in property <bool> scale-ready;
+    in property <bool> scale-active;
+    in property <int> scale-source-root;
+    in property <bool> scale-source-minor;
+    callback propose-scale(int, bool, int, bool);
+    callback resolve-scale(int, int);
+    callback discard-scale();
+    callback accept-scale();
+    callback hear-scale(bool);
+    callback undo-scene();
+    callback stop-scene();
+    private property <[string]> tonics: ["C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"];
+    private property <[string]> modes: ["Major","Natural minor"];
+    private property <int> src: root.scale-source-root;
+    private property <bool> src-minor: root.scale-source-minor;
+    private property <int> issue-index: 0;
+    changed scale-source-root => { root.src = root.scale-source-root; }
+    changed scale-source-minor => { root.src-minor = root.scale-source-minor; }
+    changed scale-active => { root.issue-index = 0; }
+    VerticalLayout {
+        padding: 6px; spacing: 6px;
+        HorizontalLayout {
+            spacing: 4px;
+            Text { text: "Source"; color: DjTheme.text-secondary; vertical-alignment: center; }
+            ComboBox { model: root.tonics; current-index: root.src; accessible-label: "Source tonic"; selected => { root.src = self.current-index; root.discard-scale(); } }
+            ComboBox { model: root.modes; current-index: root.src-minor ? 1 : 0; accessible-label: "Source scale"; selected => { root.src-minor = self.current-index == 1; root.discard-scale(); } }
+            Text { text: "Target"; color: DjTheme.text-secondary; vertical-alignment: center; }
+            dst := ComboBox { model: root.tonics; current-index: 2; accessible-label: "Target tonic"; selected => { root.discard-scale(); } }
+            dst-mode := ComboBox { model: root.modes; accessible-label: "Target scale"; selected => { root.discard-scale(); } }
+            Button { text: "Map notes"; clicked => { root.propose-scale(root.src,root.src-minor,dst.current-index,dst-mode.current-index == 1); root.issue-index = 0; } }
+        }
+        ListView {
+            for item in root.scale-rows : Text { height: 23px; color: DjTheme.text-primary; text: item; vertical-alignment: center; }
+        }
+        if root.scale-issues.length > 0 : VerticalLayout {
+            spacing: 3px;
+            ComboBox { model: root.scale-issues; current-index: root.issue-index; accessible-label: "Chromatic or out-of-range pitch"; selected => { root.issue-index = self.current-index; } }
+            HorizontalLayout {
+                spacing: 5px;
+                Button { text: "Keep original pitch"; clicked => { root.resolve-scale(root.issue-index,-1); } }
+                pitch := SpinBox { minimum: 0; maximum: 127; value: 60; accessible-label: "Explicit target MIDI pitch"; }
+                Button { text: "Use MIDI pitch"; clicked => { root.resolve-scale(root.issue-index,pitch.value); } }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+        HorizontalLayout {
+            spacing: 5px;
+            Button { text: "Hear source"; clicked => { root.hear-scale(false); } }
+            Button { text: "Hear target"; enabled: root.scale-ready; clicked => { root.hear-scale(true); } }
+            Button { text: "Stop PFL"; clicked => { root.stop-scene(); } }
+            Rectangle { horizontal-stretch: 1; }
+            Button { text: "Discard"; enabled: root.scale-active; clicked => { root.discard-scale(); } }
+            Button { text: "Apply mapping"; enabled: root.scale-ready; clicked => { root.accept-scale(); } }
+        }
+        Text { text: root.scale-status; color: DjTheme.text-secondary; wrap: word-wrap; accessible-role: text; accessible-label: "Scale mapping status"; accessible-description: self.text; }
+    }
+}

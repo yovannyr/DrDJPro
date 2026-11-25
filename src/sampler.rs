@@ -1,4 +1,10 @@
 //! Fixed four-voice one-shot bus. Decode/install is worker-only; rendering never allocates or locks.
+pub(crate) mod phrase;
+#[cfg(test)]
+pub(crate) mod qualification;
+mod resample;
+pub(crate) mod tonal;
+pub(crate) mod tools;
 use rodio::Source;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -17,6 +23,12 @@ pub(crate) struct Preferences {
     pub version: u8,
     pub gain: f32,
     pub paths: [Option<PathBuf>; 4],
+    #[serde(default)]
+    pub tuning: [Option<tools::Tuning>; 4],
+    #[serde(default)]
+    pub layers: [Option<tools::LayerPair>; 4],
+    #[serde(default)]
+    pub tonal: Option<tonal::Layout>,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -24,6 +36,9 @@ impl Default for Preferences {
             version: 1,
             gain: 0.5,
             paths: Default::default(),
+            tuning: Default::default(),
+            layers: Default::default(),
+            tonal: None,
         }
     }
 }
@@ -31,6 +46,32 @@ impl Preferences {
     pub fn validate(&self) -> Result<(), String> {
         if self.version != 1 || !self.gain.is_finite() || !(0. ..=1.).contains(&self.gain) {
             return Err("Invalid sampler preferences".into());
+        }
+        for (slot, entry) in self.tuning.iter().enumerate() {
+            if let Some(tuning) = entry {
+                if self.paths[slot].is_none() {
+                    return Err("Tuning requires an assigned sample".into());
+                }
+                tuning.validate()?;
+            }
+        }
+        for (slot, pair) in self.layers.iter().enumerate() {
+            if let Some(pair) = pair {
+                if self.paths[slot].is_none() {
+                    return Err("Layer pair needs a first sample".into());
+                }
+                pair.validate()?;
+            }
+        }
+        if let Some(layout) = &self.tonal {
+            layout.validate()?;
+            if self.paths[usize::from(layout.slot)].is_none()
+                || self.tuning[usize::from(layout.slot)]
+                    .as_ref()
+                    .is_some_and(|t| t.digest != layout.digest || t.root != i32::from(layout.root))
+            {
+                return Err("Tonal layout needs its confirmed sample tuning".into());
+            }
         }
         for path in self.paths.iter().flatten() {
             if !path.is_absolute()
@@ -80,11 +121,32 @@ impl Prepared {
         })
     }
 }
+/// One coherent PCM frame. Its two IEEE-754 bit patterns occupy one atomic word.
+#[derive(Default)]
+#[repr(transparent)]
+struct StereoFrame(AtomicU64);
+
+impl StereoFrame {
+    fn store(&self, [left, right]: [f32; 2]) {
+        let bits = u64::from(left.to_bits()) | (u64::from(right.to_bits()) << 32);
+        self.0.store(bits, Ordering::SeqCst);
+    }
+    #[inline(always)]
+    fn load(&self) -> [f32; 2] {
+        let bits = self.0.load(Ordering::SeqCst);
+        [
+            f32::from_bits(bits as u32),
+            f32::from_bits((bits >> 32) as u32),
+        ]
+    }
+}
+
 struct Bank {
-    pcm: Vec<AtomicU32>,
+    pcm: Vec<StereoFrame>,
     sequence: AtomicU64,
     frames: AtomicU32,
     rate: AtomicU32,
+    pitch: AtomicU32,
     requested: AtomicU64,
     published: AtomicU64,
     command: AtomicU64,
@@ -94,27 +156,21 @@ struct Bank {
 impl Bank {
     fn new() -> Result<Self, String> {
         let mut pcm = Vec::new();
-        pcm.try_reserve_exact(MAX_FRAMES * 2)
+        pcm.try_reserve_exact(MAX_FRAMES)
             .map_err(|e| format!("Sampler buffer: {e}"))?;
-        pcm.resize_with(MAX_FRAMES * 2, || AtomicU32::new(0));
+        pcm.resize_with(MAX_FRAMES, StereoFrame::default);
         Ok(Self {
             pcm,
             sequence: AtomicU64::new(0),
             frames: AtomicU32::new(0),
             rate: AtomicU32::new(48000),
+            pitch: AtomicU32::new(1_f32.to_bits()),
             requested: AtomicU64::new(0),
             published: AtomicU64::new(0),
             command: AtomicU64::new(0),
             play_generation: AtomicU64::new(0),
             active: AtomicBool::new(false),
         })
-    }
-    fn command(&self, playing: bool) {
-        let old = self.command.load(Ordering::SeqCst);
-        self.command.store(
-            ((old >> 1).wrapping_add(1) << 1) | u64::from(playing),
-            Ordering::SeqCst,
-        );
     }
     fn ready(&self) -> bool {
         self.sequence.load(Ordering::SeqCst).is_multiple_of(2)
@@ -123,7 +179,12 @@ impl Bank {
     }
 }
 pub(crate) struct Shared {
+    filters: &'static resample::Filters,
+    pub(crate) pattern: phrase::Transport,
     banks: [Bank; 4],
+    live_epoch: AtomicU64,
+    tonal: AtomicU64,
+    semitones: [f32; 25],
     gain: AtomicU32,
     loop_mode: AtomicBool,
     output_rate: u32,
@@ -134,7 +195,12 @@ impl Shared {
             return Err("Sampler output sample rate must be positive".into());
         }
         Ok(Arc::new(Self {
+            filters: resample::filters(),
+            pattern: Default::default(),
             banks: [Bank::new()?, Bank::new()?, Bank::new()?, Bank::new()?],
+            live_epoch: AtomicU64::new(0),
+            tonal: AtomicU64::new(0),
+            semitones: std::array::from_fn(|i| 2_f32.powf((i as f32 - 12.) / 12.)),
             gain: AtomicU32::new(0.5f32.to_bits()),
             loop_mode: AtomicBool::new(false),
             output_rate,
@@ -150,30 +216,54 @@ impl Shared {
     pub fn gain(&self) -> f32 {
         f32::from_bits(self.gain.load(Ordering::Acquire))
     }
+    pub fn set_pitch(&self, slot: usize, cents: i32) -> Result<(), String> {
+        let b = self.banks.get(slot).ok_or("Invalid sampler pad")?;
+        b.pitch
+            .store(tools::pitch_ratio(cents)?.to_bits(), Ordering::Release);
+        Ok(())
+    }
     pub fn ready(&self, slot: usize) -> bool {
-        self.banks.get(slot).is_some_and(Bank::ready)
+        slot < 4 && self.pad_source(slot).pcm.ready()
     }
     pub fn active(&self, slot: usize) -> bool {
         self.banks.get(slot).is_some_and(|b| {
             b.command.load(Ordering::SeqCst) & 1 != 0 && b.active.load(Ordering::Acquire)
         })
     }
+    fn command(&self, b: &Bank, playing: bool) {
+        // Loading jobs and the UI can both command this pad.
+        let mut old = b.command.load(Ordering::SeqCst);
+        loop {
+            let next = (old & !1).wrapping_add(2) | u64::from(playing);
+            match b
+                .command
+                .compare_exchange_weak(old, next, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => break,
+                Err(current) => old = current,
+            }
+        }
+        // Publish after the pad command; each renderer observes its own generation.
+        self.live_epoch.fetch_add(1, Ordering::Release);
+    }
     pub fn play(&self, slot: usize) -> Result<(), String> {
         let b = self.banks.get(slot).ok_or("Sampler slot must be1-4")?;
-        if !b.ready() {
+        let source = self.pad_source(slot).pcm;
+        if !source.ready() {
             return Err("Load a sample and finish preparation first".into());
         }
         b.play_generation
-            .store(b.published.load(Ordering::SeqCst), Ordering::SeqCst);
-        b.command(true);
+            .store(source.published.load(Ordering::SeqCst), Ordering::SeqCst);
+        self.command(b, true);
         Ok(())
     }
     pub fn stop(&self, slot: usize) {
         if let Some(b) = self.banks.get(slot) {
-            b.command(false);
+            self.command(b, false);
         }
     }
     pub fn stop_all(&self) {
+        self.pattern.stop();
         for i in 0..4 {
             self.stop(i);
         }
@@ -181,18 +271,22 @@ impl Shared {
     pub fn clear(&self, slot: usize) {
         if let Some(b) = self.banks.get(slot) {
             b.requested.fetch_add(1, Ordering::SeqCst);
-            b.command(false);
+            self.command(b, false);
         }
     }
     pub fn begin_load(&self, slot: usize) -> Result<(u64, u64), String> {
         let b = self.banks.get(slot).ok_or("Sampler slot must be1-4")?;
-        b.command(false);
+        self.command(b, false);
         let previous = b.requested.fetch_add(1, Ordering::SeqCst);
         Ok((previous.wrapping_add(1), previous))
     }
     pub fn owns(&self, slot: usize, token: u64) -> bool {
         let b = &self.banks[slot];
         b.ready() && b.requested.load(Ordering::SeqCst) == token
+    }
+    pub fn source_token(&self, slot: usize) -> Option<u64> {
+        let bank = self.banks.get(slot)?;
+        bank.ready().then(|| bank.published.load(Ordering::SeqCst))
     }
     pub fn rollback(&self, slot: usize, token: u64, previous: u64) {
         let b = &self.banks[slot];
@@ -201,10 +295,20 @@ impl Shared {
             .compare_exchange(token, previous, Ordering::SeqCst, Ordering::SeqCst);
     }
     /// One background writer. Odd sequence silences readers; a changed generation rejects stale jobs.
+    #[cfg(test)]
     fn install(&self, slot: usize, token: u64, sample: &Prepared) -> Result<(), String> {
-        // Linear interpolation cannot remove frequencies above the output Nyquist
-        // limit. Reject downsampling before modifying a bank; a future bandlimited
-        // worker resampler can lift this restriction without adding callback work.
+        self.install_tuned(slot, token, sample, 0)
+    }
+    fn install_tuned(
+        &self,
+        slot: usize,
+        token: u64,
+        sample: &Prepared,
+        cents: i32,
+    ) -> Result<(), String> {
+        let ratio = tools::pitch_ratio(cents)?;
+        // Preserve the source-rate contract of existing pads. Upward pitch shifts use
+        // a band-limited reader in both live and headphone playback.
         if sample.rate > self.output_rate {
             return Err(format!(
                 "Sampler sample rate {} Hz exceeds output {} Hz; use a sample at or below the output rate",
@@ -239,12 +343,16 @@ impl Shared {
             std::thread::sleep(Duration::from_millis(1));
         }
         let before = acquired.ok_or("Sampler replacement busy; retry load")?;
-        for (to, from) in b.pcm.iter().zip(&sample.samples) {
-            to.store(from.to_bits(), Ordering::Relaxed);
+        // PCM writes and reads participate in the same global order as the
+        // sequence markers. Equal even markers around a read exclude a
+        // concurrent replacement from contributing any of its samples.
+        for (to, &from) in b.pcm.iter().zip(sample.samples.as_chunks::<2>().0) {
+            to.store(from);
         }
         b.frames
             .store((sample.samples.len() / 2) as u32, Ordering::SeqCst);
         b.rate.store(sample.rate, Ordering::SeqCst);
+        b.pitch.store(ratio.to_bits(), Ordering::Release);
         b.published.store(token, Ordering::SeqCst);
         b.sequence.store(before.wrapping_add(2), Ordering::SeqCst);
         if b.requested.load(Ordering::SeqCst) != token {
@@ -256,6 +364,10 @@ impl Shared {
 #[derive(Default)]
 struct Voice {
     command: u64,
+    increment: u64,
+    filter_band: usize,
+    pitch_bits: u32,
+    scale_bits: u32,
     asset: u64,
     phase: u64,
     playing: bool,
@@ -265,12 +377,24 @@ struct Voice {
     fade_total: u32,
 }
 impl Voice {
-    fn frame(&mut self, b: &Bank, output_rate: u32, ramp: u32, looping: bool) -> [f32; 2] {
-        let command = b.command.load(Ordering::SeqCst);
+    // Private pattern/PFL voices have their own trigger generation and leave pad LEDs alone.
+    fn render(
+        &mut self,
+        bank: &Shared,
+        slot: usize,
+        ramp: u32,
+        looping: bool,
+        trigger: Option<(u64, u64)>,
+    ) -> [f32; 2] {
+        let control = &bank.banks[slot];
+        let command = trigger.map_or_else(|| control.command.load(Ordering::SeqCst), |t| t.0);
         if command == self.command && !self.playing && self.fade == 0 {
             self.last = [0.; 2];
             return [0.; 2];
         }
+        let source = bank.pad_source(slot);
+        let b = source.pcm;
+        let output_rate = bank.output_rate;
         let sequence = b.sequence.load(Ordering::SeqCst);
         let generation = b.published.load(Ordering::SeqCst);
         let frames = u64::from(b.frames.load(Ordering::SeqCst));
@@ -281,32 +405,44 @@ impl Voice {
         let clip_ramp =
             ramp.min(((frames * u64::from(output_rate) / rate.max(1)) / 2).max(1) as u32);
         let changed = command != self.command || sequence != self.asset || (!ready && self.playing);
+        let pitch_bits = b.pitch.load(Ordering::Acquire);
+        let scale_bits = source.ratio.to_bits();
+        if changed || self.pitch_bits != pitch_bits || self.scale_bits != scale_bits {
+            self.pitch_bits = pitch_bits;
+            self.scale_bits = scale_bits;
+            self.increment =
+                (rate as f64 * f64::from(source.ratio) * f64::from(f32::from_bits(pitch_bits)))
+                    .round()
+                    .max(1.) as u64;
+            self.filter_band = resample::band(self.increment, output_rate);
+        }
         if changed {
             self.command = command;
             self.asset = sequence;
             self.phase = 0;
-            self.playing =
-                ready && command & 1 != 0 && b.play_generation.load(Ordering::SeqCst) == generation;
+            self.playing = ready
+                && command & 1 != 0
+                && trigger.map_or_else(|| control.play_generation.load(Ordering::SeqCst), |t| t.1)
+                    == generation;
         }
         let mut value = [0.; 2];
         if ready && self.playing && self.phase < frames * u64::from(output_rate) {
             let frame = (self.phase / u64::from(output_rate)) as usize;
-            let next = (frame + 1).min(frames as usize - 1);
             let fraction = (self.phase % u64::from(output_rate)) as f32 / output_rate as f32;
-            let remaining = (frames * u64::from(output_rate) - self.phase) as f64 / rate as f64;
+            let remaining = (frames * u64::from(output_rate) - self.phase) as f64
+                / self.increment.max(1) as f64;
             let envelope = (remaining / f64::from(clip_ramp)).min(1.) as f32;
-            for (c, v) in value.iter_mut().enumerate() {
-                let a = f32::from_bits(b.pcm[frame * 2 + c].load(Ordering::Relaxed));
-                let z = f32::from_bits(b.pcm[next * 2 + c].load(Ordering::Relaxed));
-                *v = (a + (z - a) * fraction) * envelope;
-            }
+            value = source
+                .filters
+                .stereo(b, frames as usize, frame, fraction, self.filter_band)
+                .map(|sample| sample * envelope);
             if b.sequence.load(Ordering::SeqCst) != sequence
                 || b.requested.load(Ordering::SeqCst) != generation
             {
                 value = [0.; 2];
                 self.playing = false;
             } else {
-                self.phase = self.phase.saturating_add(rate);
+                self.phase = self.phase.saturating_add(self.increment);
                 if self.phase >= frames * u64::from(output_rate) {
                     if looping {
                         self.phase %= frames * u64::from(output_rate);
@@ -333,13 +469,18 @@ impl Voice {
             self.fade -= 1;
         }
         self.last = value;
-        b.active.store(self.playing, Ordering::Release);
+        if trigger.is_none() {
+            control.active.store(self.playing, Ordering::Release);
+        }
         value
     }
 }
 pub(crate) struct Bus {
+    pattern_clock: phrase::Clock,
     shared: Arc<Shared>,
     voices: [Voice; 4],
+    live_epoch: u64,
+    live_mask: u8,
     channels: u16,
     rate: u32,
     channel: u16,
@@ -352,10 +493,14 @@ pub(crate) struct Bus {
 impl Bus {
     pub fn new(shared: Arc<Shared>, channels: u16, rate: u32) -> Self {
         assert_eq!(shared.output_rate, rate);
+        assert!(channels > 0);
         let gain = shared.gain();
         Self {
+            pattern_clock: Default::default(),
             shared,
             voices: Default::default(),
+            live_epoch: 0,
+            live_mask: 0,
             channels,
             rate,
             channel: 0,
@@ -364,6 +509,31 @@ impl Bus {
             target: gain,
             remaining: 0,
             ramp: rate.div_ceil(200).max(1),
+        }
+    }
+    fn mix_live_pads(&mut self) {
+        let epoch = self.shared.live_epoch.load(Ordering::Acquire);
+        if epoch != self.live_epoch {
+            self.live_epoch = epoch;
+            self.live_mask = 0b1111;
+        }
+        let mut pending = self.live_mask;
+        if pending == 0 {
+            return;
+        }
+        let looping = self.shared.loop_mode.load(Ordering::Acquire);
+        while pending != 0 {
+            let slot = pending.trailing_zeros() as usize;
+            let bit = 1 << slot;
+            pending &= !bit;
+            let voice = &mut self.voices[slot];
+            let frame = voice.render(&self.shared, slot, self.ramp, looping, None);
+            self.frame[0] += frame[0] * 0.25 * self.gain;
+            self.frame[1] += frame[1] * 0.25 * self.gain;
+            // Let the first silent frame clear the last value used for retrigger crossfades.
+            if !voice.playing && voice.fade == 0 && voice.last == [0.; 2] {
+                self.live_mask &= !bit;
+            }
         }
     }
 }
@@ -380,14 +550,11 @@ impl Iterator for Bus {
                 self.gain += (self.target - self.gain) / self.remaining as f32;
                 self.remaining -= 1;
             }
-            self.frame = [0.; 2];
-            let looping = self.shared.loop_mode.load(Ordering::Acquire);
-            for (voice, bank) in self.voices.iter_mut().zip(&self.shared.banks) {
-                let frame = voice.frame(bank, self.rate, self.ramp, looping);
-                for (to, value) in self.frame.iter_mut().zip(frame) {
-                    *to += value * 0.25 * self.gain;
-                }
-            }
+            self.frame = self
+                .pattern_clock
+                .frame(&self.shared)
+                .map(|v| v * self.gain);
+            self.mix_live_pads();
         }
         let value = if self.channels == 1 {
             (self.frame[0] + self.frame[1]) * 0.5
@@ -396,7 +563,10 @@ impl Iterator for Bus {
         } else {
             0.
         };
-        self.channel = (self.channel + 1) % self.channels;
+        self.channel += 1;
+        if self.channel == self.channels {
+            self.channel = 0;
+        }
         Some(value)
     }
 }
@@ -419,31 +589,101 @@ pub(crate) struct Load {
     pub shared: Arc<Shared>,
     pub slot: usize,
     pub token: u64,
+    pub keep_playing: bool,
     pub cancel: crate::cancellation::Cancellation,
-    pub result: mpsc::Receiver<Result<Option<PathBuf>, String>>,
+    pub result: mpsc::Receiver<Result<Option<tools::Loaded>, String>>,
 }
 impl Load {
+    #[cfg(test)]
     pub fn start(
         shared: Arc<Shared>,
         slot: usize,
         picker: Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>,
     ) -> Result<Self, String> {
-        let (token, previous) = shared.begin_load(slot)?;
+        Self::configured(shared, slot, picker, None, None)
+    }
+    pub fn configured(
+        shared: Arc<Shared>,
+        slot: usize,
+        picker: Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>,
+        tuning: Option<tools::Tuning>,
+        pair: Option<tools::LayerPair>,
+    ) -> Result<Self, String> {
+        let preserved = pair.is_some();
+        Self::launch(shared, slot, preserved, tuning, move || {
+            Ok(picker().map(|p| (p, pair)))
+        })
+    }
+    pub fn layers(
+        shared: Arc<Shared>,
+        slot: usize,
+        path: PathBuf,
+        tuning: Option<tools::Tuning>,
+        get_pair: impl FnOnce() -> Result<Option<tools::LayerPair>, String> + Send + 'static,
+    ) -> Result<Self, String> {
+        Self::launch(shared, slot, true, tuning, move || {
+            Ok(get_pair()?.map(|pair| (path, Some(pair))))
+        })
+    }
+    fn launch(
+        shared: Arc<Shared>,
+        slot: usize,
+        keep_playing: bool,
+        tuning: Option<tools::Tuning>,
+        recipe: impl FnOnce() -> Result<Option<(PathBuf, Option<tools::LayerPair>)>, String>
+            + Send
+            + 'static,
+    ) -> Result<Self, String> {
+        let previous = if keep_playing {
+            shared
+                .banks
+                .get(slot)
+                .ok_or("Invalid sampler pad")?
+                .requested
+                .load(Ordering::SeqCst)
+        } else {
+            shared.begin_load(slot)?.1
+        };
+        let token = previous.wrapping_add(1);
         let cancel = crate::cancellation::Cancellation::default();
         let stopped = cancel.clone();
         let (tx, result) = mpsc::channel();
         let target = shared.clone();
         std::thread::spawn(move || {
+            let mut reserved = !keep_playing;
             let work = (|| {
-                let Some(path) = picker() else {
+                let Some((path, pair)) = recipe()? else {
                     return Ok(None);
                 };
-                let sample = Prepared::open(&path, &stopped)?;
+                let (mut sample, observed) = tools::read_sample(&path, &stopped)
+                    .map_err(|e| format!("First layer {}: {e}", path.display()))?;
+                if let Some(pair) = &pair {
+                    sample = pair.render(sample, shared.output_rate, &stopped)?;
+                }
                 stopped.check()?;
-                shared.install(slot, token, &sample)?;
-                Ok(Some(sample.path))
+                let correction = tuning.filter(|t| t.digest == observed.digest);
+                if keep_playing {
+                    shared.banks[slot]
+                        .requested
+                        .compare_exchange(previous, token, Ordering::SeqCst, Ordering::SeqCst)
+                        .map_err(|_| "Pad changed during preparation")?;
+                    reserved = true;
+                    shared.command(&shared.banks[slot], false);
+                }
+                shared.install_tuned(
+                    slot,
+                    token,
+                    &sample,
+                    correction.as_ref().map_or(0, |t| t.correction),
+                )?;
+                Ok(Some(tools::Loaded {
+                    path: sample.path,
+                    observed,
+                    tuning: correction,
+                    pair,
+                }))
             })();
-            if !matches!(work, Ok(Some(_))) {
+            if reserved && !matches!(work, Ok(Some(_))) {
                 shared.rollback(slot, token, previous);
             }
             let _ = tx.send(work);
@@ -452,6 +692,7 @@ impl Load {
             shared: target,
             slot,
             token,
+            keep_playing,
             cancel,
             result,
         })
@@ -475,6 +716,7 @@ impl Owner {
 pub(crate) struct State {
     pub shared: Arc<Shared>,
     pub preferences: Preferences,
+    pub observed: [Option<tools::Observation>; 4],
     pub saved: Preferences,
     pub writable: bool,
     pub saving: bool,
@@ -486,6 +728,7 @@ impl State {
     pub fn new(shared: Arc<Shared>) -> Self {
         Self {
             shared,
+            observed: Default::default(),
             preferences: Default::default(),
             saved: Default::default(),
             writable: false,
@@ -512,6 +755,17 @@ impl Drop for State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sampler_stereo_frame_preserves_float_bits_in_eight_bytes() {
+        assert_eq!(size_of::<StereoFrame>(), 2 * size_of::<f32>());
+        let frame = StereoFrame::default();
+        assert_eq!(frame.load().map(f32::to_bits), [0, 0]);
+        for bits in [[0x8000_0000, 0x7fc0_1234], [0xffc0_4321, 0x0000_0001]] {
+            frame.store(bits.map(f32::from_bits));
+            assert_eq!(frame.load().map(f32::to_bits), bits);
+        }
+    }
+
     fn sample(value: f32, frames: usize) -> Prepared {
         Prepared {
             path: PathBuf::from("sample.wav"),
@@ -523,6 +777,49 @@ mod tests {
         let (token, _) = shared.begin_load(slot).unwrap();
         shared.install(slot, token, prepared).unwrap();
     }
+    #[test]
+    fn sampler_idle_pads_preserve_pattern_gain_and_stereo_command_boundaries() {
+        let shared = Shared::new(48_000).unwrap();
+        install(&shared, 0, &sample(1., 1_920));
+        install(&shared, 3, &sample(-0.5, 1_920));
+        shared.set_gain(0.).unwrap();
+        let mut bus = Bus::new(shared.clone(), 2, 48_000);
+        assert!(bus.by_ref().take(640).all(|v| v == 0.));
+        assert_eq!(bus.live_mask, 0);
+
+        // Only the private pattern voice is playing while the live pads are idle.
+        let base = phrase::Pattern {
+            bpm: 120,
+            hits: vec![phrase::Hit { pad: 0, micros: 0 }],
+        };
+        shared
+            .pattern
+            .start(
+                &phrase::Patterns {
+                    base,
+                    fill: Default::default(),
+                },
+                &shared,
+            )
+            .unwrap();
+        shared.set_gain(1.).unwrap();
+        bus.by_ref().take(640).for_each(drop);
+        assert_eq!(bus.live_mask, 0);
+        assert_eq!(bus.next(), Some(0.25));
+        shared.play(3).unwrap();
+        assert_eq!(bus.next(), Some(0.25)); // Right channel of the same frame.
+        let first = bus.next().unwrap();
+        assert!(first < 0.25);
+        assert_eq!(bus.next(), Some(first));
+        bus.by_ref().take(640).for_each(drop);
+        assert_eq!(bus.next(), Some(0.125));
+        assert_eq!(bus.next(), Some(0.125));
+        bus.by_ref().take(4_000).for_each(drop);
+        assert!(bus.by_ref().take(64).all(|v| v == 0.));
+        assert_eq!(bus.live_mask, 0);
+        assert!(!shared.active(3));
+    }
+
     #[test]
     fn looping_short_clips_multiple_rates_are_heap_free_and_end_on_disable() {
         for rate in [8000, 192000] {
@@ -770,17 +1067,11 @@ mod tests {
         rx.recv_timeout(Duration::from_secs(1)).unwrap();
         std::thread::sleep(Duration::from_millis(5));
         assert_eq!(shared.banks[0].sequence.load(Ordering::SeqCst), before + 1);
-        assert_eq!(
-            shared.banks[0].pcm[0].load(Ordering::Relaxed),
-            0.5f32.to_bits()
-        );
+        assert_eq!(shared.banks[0].pcm[0].load(), [0.5; 2]);
         shared.banks[0].sequence.store(before + 2, Ordering::SeqCst);
         task.join().unwrap();
         assert!(shared.ready(0));
-        assert!(shared.banks[0]
-            .pcm
-            .iter()
-            .all(|v| v.load(Ordering::Relaxed) == (-0.5f32).to_bits()));
+        assert!(shared.banks[0].pcm.iter().all(|v| v.load() == [-0.5; 2]));
         assert!(!shared.active(0));
     }
     #[test]

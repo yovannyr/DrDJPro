@@ -124,16 +124,26 @@ impl EqControl {
         }
         self.sequence.fetch_add(1, Ordering::SeqCst);
     }
-    fn read(&self, previous: Option<u64>) -> Option<(u64, [f64; COEFFICIENTS])> {
-        let before = self.sequence.load(Ordering::SeqCst);
-        if before & 1 != 0 || previous == Some(before) {
+    fn read(&self, version: u64) -> Option<[f64; COEFFICIENTS]> {
+        if version & 1 != 0 {
             return None;
         }
         let values = self
             .values
             .each_ref()
             .map(|v| f64::from_bits(v.load(Ordering::SeqCst)));
-        (before == self.sequence.load(Ordering::SeqCst)).then_some((before, values))
+        (version == self.sequence.load(Ordering::SeqCst)).then_some(values)
+    }
+    // Unchanged controls are a single atomic load. Publish the new array to the
+    // pending slot only after verifying all coefficients belong to the same edit.
+    fn update(&self, current: &mut u64, pending: &mut Option<[f64; COEFFICIENTS]>) {
+        let version = self.sequence.load(Ordering::SeqCst);
+        if version != *current {
+            if let Some(values) = self.read(version) {
+                *pending = Some(values);
+                *current = version;
+            }
+        }
     }
 }
 
@@ -171,7 +181,7 @@ impl Bank {
 
 pub(crate) struct EqSource<S> {
     command: u64,
-    cue_controls: Option<([Arc<crate::cue_bus::DeckMixControl>; 2], usize)>,
+    route: crate::fx_chain::AuxRoute<S>,
     auxiliary_passthrough: bool,
     source: S,
     control: Arc<EqControl>,
@@ -187,8 +197,9 @@ pub(crate) struct EqSource<S> {
 impl<S: Source> EqSource<S> {
     pub fn new(source: S, control: Arc<EqControl>) -> Self {
         assert!(source.channels() > 0 && source.channels() <= MAX_CHANNELS);
-        let (command, coefficients) = control
-            .read(None)
+        let command = control.sequence.load(Ordering::SeqCst);
+        let coefficients = control
+            .read(command)
             .expect("source installed on the single control writer");
         let channels = usize::from(source.channels());
         let identity = EqSettings::default().coefficients(source.sample_rate());
@@ -201,7 +212,7 @@ impl<S: Source> EqSource<S> {
         let ramp = source.sample_rate().div_ceil(200).max(1);
         Self {
             command,
-            cue_controls: None,
+            route: crate::fx_chain::AuxRoute::None,
             auxiliary_passthrough: false,
             source,
             control,
@@ -220,13 +231,13 @@ impl<S: Source> EqSource<S> {
         }
     }
     /// Post-fader FX filters leave the pre-fader headphone bus untouched.
-    pub fn with_cue_controls(
-        mut self,
-        controls: [Arc<crate::cue_bus::DeckMixControl>; 2],
-        deck: usize,
-    ) -> Self {
-        self.cue_controls = Some((controls, deck));
+    pub fn with_route(mut self, route: crate::fx_chain::AuxRoute<S>) -> Self {
+        self.route = route;
         self
+    }
+
+    pub fn rendered_aux(&self) -> bool {
+        self.auxiliary_passthrough
     }
 }
 impl<S: Source> Iterator for EqSource<S> {
@@ -234,15 +245,17 @@ impl<S: Source> Iterator for EqSource<S> {
     fn next(&mut self) -> Option<f32> {
         let sample = self.source.next()?;
         if self.channel == 0 {
-            self.auxiliary_passthrough = self
-                .cue_controls
-                .as_ref()
-                .is_some_and(|(c, d)| c[*d].rendered_cue() || c.iter().any(|c| c.monitor_mode()));
-            if let Some((command, values)) = self.control.read(Some(self.command)) {
-                self.command = command;
-                self.wanted = Some(values);
+            let passthrough = self.route.active(&self.source);
+            if passthrough && !self.auxiliary_passthrough {
+                // Neither bank receives these samples while PFL is routed.
+                for channel in 2..self.channels {
+                    self.active.states[channel].fill([0.; 2]);
+                    self.next.states[channel].fill([0.; 2]);
+                }
             }
-            if self.fade == 0 {
+            self.auxiliary_passthrough = passthrough;
+            self.control.update(&mut self.command, &mut self.wanted);
+            if self.fade == 0 && self.wanted.is_some() {
                 if let Some(values) = self
                     .wanted
                     .take()
@@ -257,20 +270,21 @@ impl<S: Source> Iterator for EqSource<S> {
         }
         let input = if sample.is_finite() { sample } else { 0. };
         let auxiliary = self.auxiliary_passthrough && self.channel >= 2;
-        if auxiliary {
-            self.active.states[self.channel].fill([0.; 2]);
-            self.next.states[self.channel].fill([0.; 2]);
-        }
-        let a = if auxiliary {
-            f64::from(input)
+        let output = if auxiliary || (self.fade == 0 && self.active.bypass) {
+            input
         } else {
-            self.active.sample(self.channel, input)
-        };
-        let value = if self.fade == 0 || auxiliary {
-            a
-        } else {
-            let b = self.next.sample(self.channel, input);
-            a + (b - a) * f64::from(self.fade) / f64::from(self.ramp)
+            let a = self.active.sample(self.channel, input);
+            let value = if self.fade == 0 {
+                a
+            } else {
+                let b = self.next.sample(self.channel, input);
+                a + (b - a) * f64::from(self.fade) / f64::from(self.ramp)
+            };
+            if value.is_finite() && value.abs() <= f64::from(f32::MAX) {
+                value as f32
+            } else {
+                0.
+            }
         };
         self.channel += 1;
         if self.channel == self.channels {
@@ -282,11 +296,7 @@ impl<S: Source> Iterator for EqSource<S> {
                 self.fade += 1;
             }
         }
-        Some(if value.is_finite() && value.abs() <= f64::from(f32::MAX) {
-            value as f32
-        } else {
-            0.
-        })
+        Some(output)
     }
 }
 impl<S: Source> Source for EqSource<S> {
@@ -380,14 +390,16 @@ mod tests {
             }
         });
         for _ in 0..10000 {
-            if let Some((_, values)) = control.read(None) {
+            if let Some(values) = control.read(control.sequence.load(Ordering::SeqCst)) {
                 assert!(expected.contains(&values));
             }
         }
         task.join().unwrap();
         control.sequence.store(1, Ordering::SeqCst);
         assert!(
-            control.read(None).is_none(),
+            control
+                .read(control.sequence.load(Ordering::SeqCst))
+                .is_none(),
             "busy writer never causes a retry loop"
         );
     }
@@ -477,6 +489,61 @@ mod tests {
         );
         assert_eq!(output.collect::<Vec<_>>(), samples);
     }
+    #[test]
+    fn eq_pfl_release_clears_both_filter_histories_during_a_queued_fade() {
+        use crate::cue_bus::DeckMixControl;
+
+        const FRAMES: usize = 500;
+        let control = EqControl::new(48_000);
+        control.publish(EqSettings {
+            filter: -0.55,
+            ..Default::default()
+        });
+        let monitor = DeckMixControl::new();
+        let mut samples = vec![0.; FRAMES * 4];
+        samples[..4].fill(1.);
+        samples[(FRAMES - 1) * 4..].copy_from_slice(&[-0., f32::NAN, f32::INFINITY, 0.5]);
+        let mut eq = EqSource::new(
+            rodio::buffer::SamplesBuffer::new(4, 48_000, samples),
+            Arc::clone(&control),
+        )
+        .with_route(crate::fx_chain::AuxRoute::deck(
+            [Arc::clone(&monitor), DeckMixControl::new()],
+            0,
+        ));
+        control.publish(EqSettings {
+            filter: -0.4,
+            ..Default::default()
+        });
+
+        let impulse = eq.next().unwrap();
+        assert!(impulse > 0. && impulse < 1.);
+        monitor.set_monitor_mode(true); // The current frame must finish unchanged.
+        for _ in 1..4 {
+            assert_eq!(eq.next(), Some(impulse));
+        }
+        let tail = eq.next().unwrap();
+        assert!(tail > 0.);
+        control.publish(EqSettings::default()); // Queued behind the active crossfade.
+        monitor.set_monitor_mode(false);
+        assert_eq!(eq.next(), Some(tail));
+        assert_eq!(eq.next(), Some(0.));
+        assert_eq!(eq.next(), Some(0.));
+        for _ in 2..FRAMES - 1 {
+            eq.next().unwrap();
+            eq.next().unwrap();
+            assert_eq!(eq.next(), Some(0.));
+            assert_eq!(eq.next(), Some(0.));
+        }
+        assert_eq!(eq.fade, 0);
+        assert!(eq.active.bypass);
+        let neutral: [f32; 4] = std::array::from_fn(|_| eq.next().unwrap());
+        assert_eq!(
+            neutral.map(f32::to_bits),
+            [-0_f32, 0., 0., 0.5].map(f32::to_bits)
+        );
+    }
+
     #[test]
     fn eq_changes_are_frame_coherent_smoothed_and_allocate_nothing() {
         let control = EqControl::new(48000);

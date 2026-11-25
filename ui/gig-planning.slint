@@ -1,0 +1,96 @@
+import { ComboBox, LineEdit, TextEdit } from "std-widgets.slint";
+import { LibraryButton } from "controls.slint";
+
+export struct GigRuleView { track-id: int, status: string, reason: string, fulfilled: bool, warning: string, notice: string }
+
+export component GigPlanningPanel inherits Rectangle {
+    in property <[string]> names;
+    in property <int> selection-index;
+    in property <int> selected-track;
+    in property <GigRuleView> rule;
+    callback create-gig(string);
+    callback select-gig(int);
+    callback save-rule(int, string, string);
+    callback close();
+    out property <bool> text-focused: root.visible && (picker.has-focus || name.has-focus || reason.has-focus);
+    private property <int> owner-gig: -1;
+    private property <int> owner-track: -1;
+    private property <string> saved-code;
+    private property <string> saved-reason;
+    private property <string> draft-code;
+    private property <bool> editable: root.visible && root.selection-index > 0 && root.selected-track > 0
+        && root.owner-gig == root.selection-index && root.owner-track == root.selected-track
+        && root.rule.track-id == root.selected-track;
+    function reset-draft() {
+        root.owner-gig = root.selection-index; root.owner-track = root.selected-track;
+        root.saved-code = root.rule.track-id == root.selected-track ? root.rule.status : "";
+        root.saved-reason = root.rule.track-id == root.selected-track ? root.rule.reason : "";
+        root.draft-code = root.saved-code; reason.text = root.saved-reason;
+        reason.content-y = 0px;
+    }
+    changed selection-index => { picker.current-index = root.selection-index; root.reset-draft(); }
+    changed selected-track => { root.reset-draft(); }
+    changed rule => {
+        if root.visible && (root.rule.track-id != root.owner-track || root.saved-code != root.rule.status
+            || root.saved-reason != root.rule.reason) { root.reset-draft(); }
+    }
+    changed visible => {
+        if root.visible { root.reset-draft(); picker.current-index = root.selection-index; picker.focus(); }
+        else { name.text = ""; }
+    }
+    accessible-role: groupbox; accessible-label: "Gig planning";
+    background: #171a1f;
+    VerticalLayout {
+        padding: 2px; spacing: 2px;
+        HorizontalLayout {
+            spacing: 4px;
+            picker := ComboBox {
+                model: root.names; accessible-label: "Active gig"; min-width: 96px;
+                preferred-width: 150px; max-width: 240px; height: 28px;
+                selected => { root.select-gig(self.current-index); self.current-index = root.selection-index; }
+            }
+            name := LineEdit {
+                accessible-label: "New gig name"; placeholder-text: "New gig name"; height: 28px;
+            }
+            LibraryButton {
+                text: "Create"; accessible-label: "Create gig"; enabled: name.text != "";
+                clicked => { root.create-gig(name.text); }
+            }
+            LibraryButton { text: "Close"; accessible-label: "Close gig planning"; clicked => { root.close(); } }
+        }
+        HorizontalLayout {
+            spacing: 3px;
+            for choice in [{code: "required", label: "Must play"}, {code: "request", label: "Request"}, {code: "avoid", label: "Avoid tonight"}] : LibraryButton {
+                text: choice.label; accessible-label: "Mark as " + choice.label;
+                enabled: root.editable; active: root.editable && root.draft-code == choice.code;
+                accessible-checkable: true; accessible-checked: self.active;
+                clicked => { root.draft-code = choice.code; }
+            }
+            Text {
+                accessible-role: text; accessible-label: "Saved gig rule"; accessible-description: self.text;
+                text: root.selection-index == 0 ? "No active gig" : root.selected-track <= 0 ? "Select a track"
+                    : !root.editable || root.rule.status == "" ? "No saved rule"
+                    : root.rule.status == "required" ? (root.rule.fulfilled ? "Must play · fulfilled" : "Must play · pending")
+                    : root.rule.status == "request" ? "Request" : "Avoid tonight";
+                color: #efefef; font-size: 12px; vertical-alignment: center; overflow: elide;
+                horizontal-stretch: 1;
+            }
+            LibraryButton {
+                text: "Save"; accessible-label: "Save gig rule"; enabled: root.editable && root.draft-code != "";
+                clicked => { if root.editable { root.save-rule(root.owner-track, root.draft-code, reason.text); } }
+            }
+            LibraryButton {
+                text: "Clear"; accessible-label: "Clear gig rule"; enabled: root.editable && root.rule.status != "";
+                clicked => { if root.editable { root.save-rule(root.owner-track, "", ""); } }
+            }
+        }
+        reason := TextEdit {
+            enabled: root.editable; accessible-label: "Gig rule reason"; placeholder-text: "Reason (optional)";
+            wrap: word-wrap; font-size: 12px; min-height: 26px; vertical-stretch: 1;
+        }
+        if root.rule.notice != "" : Text {
+            text: root.rule.notice; accessible-role: text; accessible-label: "Gig planning notice";
+            accessible-description: self.text; color: #ffdb8a; font-size: 12px; overflow: elide; height: 16px;
+        }
+    }
+}

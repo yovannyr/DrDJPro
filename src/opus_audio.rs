@@ -10,22 +10,26 @@ use std::{
 /// Inspect only the first Ogg page: the initial packet must be OpusHead.
 pub(crate) fn is_opus(path: &Path) -> Result<bool, String> {
     let mut header = Vec::new();
-    File::open(path)
+    crate::media_input::open_regular(path)
         .map_err(|e| e.to_string())?
         .take(512)
         .read_to_end(&mut header)
         .map_err(|e| e.to_string())?;
+    Ok(has_opus_header(&header))
+}
+
+pub(crate) fn has_opus_header(header: &[u8]) -> bool {
     if header.len() < 27 || &header[..4] != b"OggS" {
-        return Ok(false);
+        return false;
     }
     let start = 27 + usize::from(header[26]);
-    Ok(header.get(start..start + 8) == Some(&b"OpusHead"[..]))
+    header.get(start..start + 8) == Some(&b"OpusHead"[..])
 }
 
 // Check real page boundaries, not arbitrary OggS byte sequences inside payloads.
 // The decoder subsequently validates each page CRC while it reads the stream.
 fn terminal_page(path: &Path, cancel: &Cancellation) -> Result<(i64, bool, usize), String> {
-    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let mut file = crate::media_input::open_regular(path).map_err(|e| e.to_string())?;
     let length = file.metadata().map_err(|e| e.to_string())?.len();
     let mut offset = 0_u64;
     let mut serial = None;
@@ -183,9 +187,21 @@ pub(crate) fn decode_stream(
     cancel: &Cancellation,
     mut consume: impl FnMut(u16, u32, &[f32]) -> Result<(), String>,
 ) -> Result<(), String> {
+    decode_stream_until(path, cancel, |channels, rate, pcm| {
+        consume(channels, rate, pcm)?;
+        Ok(false)
+    })
+}
+
+/// As above, with an early successful return when the consumer has filled its excerpt.
+pub(crate) fn decode_stream_until(
+    path: &Path,
+    cancel: &Cancellation,
+    mut complete: impl FnMut(u16, u32, &[f32]) -> Result<bool, String>,
+) -> Result<(), String> {
     cancel.check()?;
     let (final_granule, empty_eos, first_page_packets) = terminal_page(path, cancel)?;
-    let file = File::open(path).map_err(|e| e.to_string())?;
+    let file = crate::media_input::open_regular(path).map_err(|e| e.to_string())?;
     let source = CancellableReader {
         file,
         cancel: cancel.clone(),
@@ -237,7 +253,9 @@ pub(crate) fn decode_stream(
             return Err("Non-finite audio sample".into());
         }
         if !trimmed.is_empty() {
-            consume(channels as u16, RATE as u32, trimmed)?;
+            if complete(channels as u16, RATE as u32, trimmed)? {
+                return cancel.check();
+            }
             sample_count = sample_count
                 .checked_add(trimmed.len() as u64)
                 .ok_or("PCM sample count overflow")?;
@@ -259,7 +277,7 @@ pub(crate) fn metadata(
     cancel: &Cancellation,
 ) -> Result<crate::track_metadata::TrackMetadata, String> {
     cancel.check()?;
-    let file = File::open(path).map_err(|e| e.to_string())?;
+    let file = crate::media_input::open_regular(path).map_err(|e| e.to_string())?;
     let source = CancellableReader {
         file,
         cancel: cancel.clone(),

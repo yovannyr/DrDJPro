@@ -199,6 +199,8 @@ As a DJ preparing multiple tracks, I want to see preparation status and batch an
 
 ### D05
 
+**Implementierungsstand:** In Prepare öffnet der Cue-Feinschnitt den gewählten Track. Ein freier Schritt entspricht einem Quellframe, mit Bezug verschiebt jeder Schritt um einen Viertelbeat. Die Kopfhörervorschau beginnt am gewählten Frame und endet spätestens drei Sekunden später. Beim Übernehmen wird die bestehende Cue-Zeile gegen Titelpfad, ursprünglichen Slot und Bezug geprüft. Die automatisierten Cue-Gegenproben stehen im [Prüfbericht](../MUSIKVORBEREITUNG_ABSCHLUSSPRUEFUNG.md). Die Hörprobe am Controller folgt gemeinsam.
+
 **Cue-Feinschnitt mit Referenzpunkt.** FR-007–009 und FR-013/014 decken bereits Bearbeiten, Anspringen, Anzeige und Speicherung ab. Der fehlende Schritt ist das hörbare Einrasten relativ zu einem anderen Cue. [Einordnung im Plan](../MIXED_IN_KEY_UMSETZUNGSPLAN.md)
 
 **REQ-D05** Im Prepare-Editor kann der DJ das Beatgrid oder einen anderen Cue desselben Titels als Bezug wählen. Bei hoher Vergrößerung muss eine Schrittweite von einem Viertelbeat verfügbar sein. Die App zeigt Bezug und Schrittweite an und erlaubt das Vorhören ab der neuen Position. Für einen Cue-Bezug bietet sie den zuletzt verschobenen anderen Cue oder den nächstliegenden Vorgänger an. Der erste Cue bei 0 ms ist gültig. Fehlt ein geeigneter Bezug oder ein lokales Tempo, bleibt die freie Bearbeitung möglich. Übernehmen speichert nur den bearbeiteten Cue, Abbrechen verwirft den Entwurf.

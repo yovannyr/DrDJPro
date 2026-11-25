@@ -1,3 +1,4 @@
+import { SectionJumpControl, SectionJumpView } from "section-jump.slint";
 // Generated with the full local GUI input; input handlers are retained.
 import { Button, Slider, SpinBox, LineEdit, ListView, ComboBox, CheckBox } from "std-widgets.slint";
 import { DjTheme, DeckSlotData, LoopRange, SavedLoopRow, HotCueRow, CrateRow, BeatLine, LibraryRow, TableColumn, DeckView, SamplerRow } from "theme.slint";
@@ -5,6 +6,10 @@ import { DjAction, HotCuePad, NudgeHold, VirtualPlatter } from "controls.slint";
 import { WaveformStrip } from "waveform.slint";
 
 export component CompactDeck inherits Rectangle {
+    in property <SectionJumpView> section-jump;
+    callback select-section(int);
+    callback arm-section();
+    callback cancel-section();
     in property <int> loop-jog-mode;
     callback loop-jog();
     callback cancel-loop-jog();
@@ -127,12 +132,18 @@ export component CompactDeck inherits Rectangle {
             VerticalLayout {
 HorizontalLayout {
             height: 20px;
+            if root.section-jump.supported : SectionJumpControl {
+                jump: root.section-jump; deck-label: root.deck-label;
+                select-target(i) => { root.select-section(i); }
+                arm => { root.arm-section(); }
+                cancel-jump => { root.cancel-section(); }
+            }
             Text { text: (root.censor ? "CENSOR · " : "") + track-title; color: root.censor ? #ffc15e : DjTheme.text-primary; font-size: 13px; overflow: elide; }
 
 
 
         }
-WaveformStrip { height: 42px; overview: true; deck-label: root.deck-label; accent: root.accent; values: root.waveform; colors: root.colors; hot-cues: root.hot-cues; loop-range: root.loop-range; position: root.position; marker: root.position; enabled: !root.audio-enabled || root.loaded; seek(value) => { if root.audio-enabled { root.seek(value); } else { root.position = value; } } }
+WaveformStrip { height: 42px; overview: true; section-mark: root.section-jump.supported ? root.section-jump.mark : -1; deck-label: root.deck-label; accent: root.accent; values: root.waveform; colors: root.colors; hot-cues: root.hot-cues; loop-range: root.loop-range; position: root.position; marker: root.position; enabled: !root.audio-enabled || root.loaded; seek(value) => { if root.audio-enabled { root.seek(value); } else { root.position = value; } } }
 
 
             horizontal-stretch: 1;

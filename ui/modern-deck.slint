@@ -1,3 +1,4 @@
+import { SectionJumpControl, SectionJumpView } from "section-jump.slint";
 import { ModernTheme } from "modern-theme.slint";
 import { DeckAction, HoldAction, ControlKind, JogPhase } from "modern-state.slint";
 import { HotCueRow } from "theme.slint";
@@ -5,6 +6,10 @@ import { HoldButton, ValueRail } from "modern-controls.slint";
 import { ModernOverviewStrip, ModernDetailWaveform } from "modern-waveform.slint";
 
 export component ModernTrackHeader inherits Rectangle {
+    in property <SectionJumpView> section-jump;
+    callback select-section(int);
+    callback arm-section();
+    callback cancel-section();
     in property <image> cover-image;
     in property <color> cover;
     in property <string> title: "";
@@ -42,9 +47,16 @@ export component ModernTrackHeader inherits Rectangle {
             }
             HorizontalLayout {
                 Text { text: root.artist == "" ? "—" : root.artist; color: ModernTheme.muted; font-size: 11px; overflow: elide; }
+                if root.section-jump.supported : SectionJumpControl {
+                    jump: root.section-jump; deck-label: "Deck " + root.label;
+                    select-target(i) => { root.select-section(i); }
+                    arm => { root.arm-section(); }
+                    cancel-jump => { root.cancel-section(); }
+                }
                 Text { width: 60px; text: root.musical-key == "" ? "KEY —" : "KEY " + root.musical-key; color: root.accent; font-size: 10px; horizontal-alignment: right; }
             }
             ModernOverviewStrip {
+                section-mark: root.section-jump.supported ? root.section-jump.mark : -1;
                 height: 29px; horizontal-stretch: 1;
                 deck-label: root.label;
                 accent: root.accent;
