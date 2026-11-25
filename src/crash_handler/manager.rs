@@ -14,7 +14,7 @@ use std::{
 pub(super) enum Action {
     Refresh(Option<String>),
     Save(CrashSettings),
-    Send(String),
+    Send(String, String),
     KeepLocal(String),
     Delete(String),
     Retry,
@@ -29,12 +29,25 @@ pub(super) struct Snapshot {
     pub reports: Vec<CrashReport>,
     pub settings: CrashSettings,
     pub settings_issue: String,
-    pub endpoint_ready: bool,
+    pub destination_id: Option<String>,
 }
 
 impl Snapshot {
+    pub(super) fn consent_row(&self) -> Option<usize> {
+        let renewed = self
+            .reports
+            .iter()
+            .position(|r| r.status == ReportStatus::NeedsConsent);
+        if renewed.is_some() || (self.settings.auto_submit && self.destination_id.is_some()) {
+            return renewed;
+        }
+        self.reports
+            .iter()
+            .position(|r| r.status == ReportStatus::Pending)
+    }
+
     fn upload_needed(&self) -> bool {
-        self.endpoint_ready
+        self.destination_id.is_some()
             && self.reports.iter().any(|r| {
                 r.status == ReportStatus::Queued
                     || (self.settings.auto_submit && r.status == ReportStatus::Pending)
@@ -73,11 +86,7 @@ impl Worker {
                 let first = match first {
                     Ok(data) => {
                         let upload = data.upload_needed();
-                        let prompt = data
-                            .reports
-                            .iter()
-                            .any(|r| r.status == ReportStatus::Pending)
-                            && (!data.settings.auto_submit || !data.endpoint_ready);
+                        let prompt = data.consent_row().is_some();
                         Event {
                             id: 0,
                             snapshot: Some(data),
@@ -133,17 +142,17 @@ impl Drop for Worker {
 
 fn snapshot(store: &CrashStore) -> io::Result<Snapshot> {
     let reports = store.list()?;
-    let (settings, mut settings_issue) = match store.settings() {
-        Ok(settings) => (settings, String::new()),
+    let (settings, destination_id, mut settings_issue) = match store.sharing_settings() {
+        Ok((settings, id)) => (settings, id, String::new()),
         Err(_) => (
             CrashSettings::default(),
+            None,
             "Sharing settings unreadable; sharing disabled. Save valid settings to replace them."
                 .into(),
         ),
     };
-    let endpoint_ready = settings_issue.is_empty() && endpoint(&settings.server_url).is_ok();
     if settings_issue.is_empty()
-        && !endpoint_ready
+        && destination_id.is_none()
         && (!settings.server_url.is_empty() || settings.auto_submit)
     {
         settings_issue = "Saved HTTPS destination invalid; sharing disabled".into();
@@ -152,12 +161,13 @@ fn snapshot(store: &CrashStore) -> io::Result<Snapshot> {
         reports,
         settings,
         settings_issue,
-        endpoint_ready,
+        destination_id,
     })
 }
 
 fn act(store: &CrashStore, request: Request) -> Event {
     let settings_changed = matches!(request.action, Action::Refresh(None) | Action::Save(_));
+    let sending = matches!(request.action, Action::Send(..));
     let outcome = (|| -> io::Result<(String, bool)> {
         match request.action {
             Action::Refresh(message) => Ok((
@@ -187,14 +197,8 @@ fn act(store: &CrashStore, request: Request) -> Event {
                 );
                 Ok(("Sharing settings saved".into(), settings.auto_submit))
             }
-            Action::Send(id) => {
-                let data = snapshot(store)?;
-                if !data.endpoint_ready {
-                    return Err(io::Error::other(
-                        "Configure a valid HTTPS destination first",
-                    ));
-                }
-                let queued = store.queue_report(&id)?;
+            Action::Send(id, displayed_destination_id) => {
+                let queued = store.queue_report_for(&id, &displayed_destination_id)?;
                 Ok((
                     if queued {
                         "Text report authorized for sending"
@@ -206,14 +210,7 @@ fn act(store: &CrashStore, request: Request) -> Event {
                 ))
             }
             Action::KeepLocal(id) => {
-                let report = store
-                    .list()?
-                    .into_iter()
-                    .find(|r| r.id == id)
-                    .ok_or_else(|| io::Error::other("Missing report"))?;
-                if report.status == ReportStatus::Submitted
-                    || !store.transition_status(&id, report.status, ReportStatus::Declined)?
-                {
+                if !store.keep_local(&id)? {
                     return Err(io::Error::other("Report changed or was already submitted"));
                 }
                 emit(LogEvent::SharingDeclined, Some(&id), None);
@@ -236,7 +233,12 @@ fn act(store: &CrashStore, request: Request) -> Event {
         Ok((message, upload)) => (message, upload, true),
         Err(error) => {
             emit(LogEvent::ActionFailed, None, Some(error.kind()));
-            ("Action failed. Check HTTPS settings or refresh the report; local evidence is retained.".into(), false, false)
+            let message = if sending {
+                "Authorization failed. Check the saved HTTPS destination and choose SEND TEXT again."
+            } else {
+                "Action failed. Check HTTPS settings or refresh the report; local evidence is retained."
+            };
+            (message.into(), false, false)
         }
     };
     match snapshot(store) {

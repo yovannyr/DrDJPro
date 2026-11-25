@@ -13,6 +13,7 @@ fn report(id: &str, state: ReportStatus) -> CrashReport {
         arch: "testCPU".into(),
         stack: "app::frame\n  at <redacted>/frame.rs:42".into(),
         status: state,
+        approval: None,
     }
 }
 
@@ -26,7 +27,7 @@ fn event(id: u64, reports: Vec<CrashReport>, prompt: bool) -> Event {
                 server_url: "https://example.invalid/reports".into(),
             },
             settings_issue: String::new(),
-            endpoint_ready: true,
+            destination_id: Some("saved-generation".into()),
         }),
         message: "Ready".into(),
         settings_changed: true,
@@ -156,9 +157,16 @@ fn pending_post_crash_prompt_close_and_selected_consent_are_explicit() {
         ))
         .unwrap();
     tick(&session.state);
+    view.set_endpoint("https://unsaved.invalid/reports".into());
     view.invoke_send_selected();
     let send = requests.try_recv().unwrap();
-    assert!(matches!(send.action, Action::Send(ref id) if id == "second"));
+    assert_eq!(
+        view.get_saved_destination(),
+        "https://example.invalid/reports"
+    );
+    assert!(
+        matches!(send.action, Action::Send(id, token) if id == "second" && token == "saved-generation")
+    );
     assert!(ui.get_left_playing());
     assert_eq!(ui.get_left_position(), 42.);
     session.shutdown();
@@ -219,6 +227,34 @@ fn settings_are_explicit_selection_uses_ids_and_stale_replies_do_not_unlock() {
     assert!(requests.try_recv().is_err());
     view.invoke_delete_selected();
     assert!(matches!(requests.try_recv().unwrap().action, Action::Delete(ref id) if id == "b"));
+}
+
+#[test]
+fn changed_destination_prompts_for_consent_with_auto_sharing_enabled() {
+    i_slint_backend_testing::init_no_event_loop();
+    let ui = AppWindow::new().unwrap();
+    let (session, requests, events) = setup(&ui);
+    let mut startup = event(
+        0,
+        vec![
+            report("declined", ReportStatus::Declined),
+            report("waiting", ReportStatus::NeedsConsent),
+        ],
+        true,
+    );
+    startup.snapshot.as_mut().unwrap().settings.auto_submit = true;
+    events.send(startup).unwrap();
+    tick(&session.state);
+    let view = session.state.borrow().view.as_ref().unwrap().clone_strong();
+    assert!(view.window().is_visible());
+    assert!(view.get_post_crash());
+    assert_eq!(view.get_selected_row(), 1);
+    assert_eq!(
+        view.get_rows().row_data(1).unwrap().state.as_str(),
+        "Renew consent"
+    );
+    assert!(view.get_details().contains("saved destination"));
+    assert!(requests.try_recv().is_err());
 }
 
 #[test]

@@ -476,7 +476,15 @@ pub(super) fn probe(root: &Path, mode: &str) -> io::Result<()> {
                 None,
             );
         }
-        check(flush(Duration::from_secs(3)))?;
+        let flushed = flush(Duration::from_secs(3));
+        let state = status();
+        if !flushed || state.errors != 0 || state.dropped != 0 {
+            return Err(io::Error::other(format!(
+                "Diagnostic {mode} batch {} failed: {}",
+                batch + 1,
+                state.text()
+            )));
+        }
     }
     Ok(())
 }

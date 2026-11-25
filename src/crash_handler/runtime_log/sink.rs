@@ -3,7 +3,7 @@
 use super::{Entry, MAX_LINE};
 use crate::crash_handler::store::{private_file, reject_link};
 use std::{
-    fs::{self, File, OpenOptions, TryLockError},
+    fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
 };
@@ -45,11 +45,9 @@ impl Sink {
             .truncate(false)
             .write(true)
             .open(path)?;
-        match lock.try_lock() {
-            Ok(()) => (),
-            Err(TryLockError::WouldBlock) => return Err(io::ErrorKind::WouldBlock.into()),
-            Err(TryLockError::Error(e)) => return Err(e),
-        }
+        // Only the background writer waits here. Let the OS wake it at handoff:
+        // periodic retries can miss every gap between another process's batches.
+        lock.lock()?;
         let mut sink = Self {
             recovered: 0,
             dir,

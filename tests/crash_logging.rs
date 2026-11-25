@@ -17,7 +17,11 @@ fn child(root: &Path, flag: &str, mode: &str) -> Child {
         .arg(mode)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(if flag == "--crash-log-probe" {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        })
         .spawn()
         .unwrap()
 }
@@ -59,6 +63,15 @@ fn logs(root: &Path) -> Vec<serde_json::Value> {
     result
 }
 
+fn wait_for_both(first: &mut Child, second: &mut Child) {
+    let first = wait(first);
+    let second = wait(second);
+    assert!(
+        first.success() && second.success(),
+        "Log probes exited with {first} and {second}"
+    );
+}
+
 #[test]
 fn nested_and_restarted_owners_keep_the_same_runtime_hub_usable() {
     let temp = tempfile::tempdir().unwrap();
@@ -94,15 +107,13 @@ fn two_processes_share_one_bounded_rotation_without_torn_records() {
     let pids: BTreeSet<_> = [first.id() as u64, second.id() as u64]
         .into_iter()
         .collect();
-    assert!(wait(&mut first).success());
-    assert!(wait(&mut second).success());
+    wait_for_both(&mut first, &mut second);
     let entries = logs(temp.path());
     let saved: BTreeSet<_> = entries.iter().filter_map(|e| e["pid"].as_u64()).collect();
     assert_eq!(saved, pids);
     let mut rotation_a = child(temp.path(), "--crash-log-probe", "rotate");
     let mut rotation_b = child(temp.path(), "--crash-log-probe", "rotate");
-    assert!(wait(&mut rotation_a).success());
-    assert!(wait(&mut rotation_b).success());
+    wait_for_both(&mut rotation_a, &mut rotation_b);
     assert!(!logs(temp.path()).is_empty());
     let dir = temp.path().join("runtime-logs");
     assert!(dir.join("runtime.2.jsonl").exists());

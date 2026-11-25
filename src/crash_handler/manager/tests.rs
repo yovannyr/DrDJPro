@@ -15,6 +15,7 @@ fn startup_only_requests_previously_authorized_uploads_and_prompts_pending() {
     for (state, automatic, expected_upload, expected_prompt) in [
         (ReportStatus::Pending, false, false, true),
         (ReportStatus::Queued, false, true, false),
+        (ReportStatus::NeedsConsent, true, false, true),
         (ReportStatus::Declined, true, false, false),
         (ReportStatus::Submitted, true, false, false),
         (ReportStatus::Pending, true, true, false),
@@ -22,13 +23,13 @@ fn startup_only_requests_previously_authorized_uploads_and_prompts_pending() {
         let temp = tempfile::tempdir().unwrap();
         let store = CrashStore::open(temp.path().into()).unwrap();
         let report = store.insert("frame").unwrap();
-        store.set_status(&report.id, state).unwrap();
         store
             .save_settings(&CrashSettings {
                 auto_submit: automatic,
                 server_url: "https://example.invalid/reports".into(),
             })
             .unwrap();
+        store.set_status(&report.id, state).unwrap();
         let worker = Worker::spawn(store.clone()).unwrap();
         let event = next(&worker);
         assert_eq!(event.id, 0);
@@ -50,15 +51,17 @@ fn explicit_actions_persist_consent_settings_and_delete_only_owned_evidence() {
     let initial = next(&worker);
     assert!(initial.prompt);
     assert!(!initial.upload);
-    assert!(!request(&worker, 1, Action::Send(report.id.clone())).upload);
+    assert!(!request(&worker, 1, Action::Send(report.id.clone(), String::new())).upload);
     assert_eq!(store.list().unwrap()[0].status, ReportStatus::Pending);
     let settings = CrashSettings {
         auto_submit: false,
         server_url: "https://example.invalid/reports".into(),
     };
-    assert!(request(&worker, 2, Action::Save(settings.clone())).settings_changed);
+    let saved = request(&worker, 2, Action::Save(settings.clone()));
+    assert!(saved.settings_changed);
+    let destination_id = saved.snapshot.unwrap().destination_id.unwrap();
     assert_eq!(store.settings().unwrap(), settings);
-    assert!(request(&worker, 3, Action::Send(report.id.clone())).upload);
+    assert!(request(&worker, 3, Action::Send(report.id.clone(), destination_id)).upload);
     assert_eq!(store.list().unwrap()[0].status, ReportStatus::Queued);
     assert!(!request(&worker, 4, Action::KeepLocal(report.id.clone())).upload);
     assert_eq!(store.list().unwrap()[0].status, ReportStatus::Declined);
@@ -91,13 +94,19 @@ fn invalid_and_corrupt_settings_fail_closed_and_never_fake_delivery() {
     let temp = tempfile::tempdir().unwrap();
     let store = CrashStore::open(temp.path().into()).unwrap();
     let report = store.insert("frame").unwrap();
+    let settings = CrashSettings {
+        server_url: "https://example.invalid/reports".into(),
+        auto_submit: false,
+    };
+    store.save_settings(&settings).unwrap();
+    let valid_id = store.sharing_settings().unwrap().1.unwrap();
     store.queue_report(&report.id).unwrap();
     std::fs::write(store.root().join("settings.json"), b"corrupt").unwrap();
     let worker = Worker::spawn(store.clone()).unwrap();
     let event = next(&worker);
     assert!(!event.upload);
     let data = event.snapshot.unwrap();
-    assert!(!data.endpoint_ready);
+    assert!(data.destination_id.is_none());
     assert!(!data.settings.auto_submit);
     assert!(!data.settings_issue.is_empty());
     for (id, url) in [
@@ -121,11 +130,53 @@ fn invalid_and_corrupt_settings_fail_closed_and_never_fake_delivery() {
         assert!(!reply.settings_changed);
         assert!(store.settings().is_err());
     }
-    assert_eq!(store.list().unwrap()[0].status, ReportStatus::Queued);
+    assert_eq!(store.list().unwrap()[0].status, ReportStatus::NeedsConsent);
     std::fs::write(store.root().join(format!("{}.json", report.id)), b"broken").unwrap();
-    let failed = request(&worker, 9, Action::Send(report.id));
+    let failed = request(&worker, 9, Action::Send(report.id, valid_id));
     assert!(!failed.message.contains("no data was sent"));
     assert!(!failed.upload);
+}
+
+#[test]
+fn stale_send_cannot_authorize_an_endpoint_changed_by_another_instance() {
+    const ORIGINAL_URL: &str = "https://previous.invalid/reports";
+    for return_to_original_url in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let store = CrashStore::open(temp.path().into()).unwrap();
+        let mut settings = CrashSettings {
+            server_url: ORIGINAL_URL.into(),
+            auto_submit: true,
+        };
+        store.save_settings(&settings).unwrap();
+        let report = store.insert("frame").unwrap();
+        store.queue_report(&report.id).unwrap();
+        let worker = Worker::spawn(store.clone()).unwrap();
+        let shown = next(&worker).snapshot.unwrap().destination_id.unwrap();
+        // The click predates the external change; the filesystem actor handles it afterwards.
+        let old_click = Action::Send(report.id.clone(), shown.clone());
+        let other = CrashStore::open(store.root().into()).unwrap();
+        settings.server_url = "https://current.invalid/reports".into();
+        other.save_settings(&settings).unwrap();
+        if return_to_original_url {
+            settings.server_url = ORIGINAL_URL.into();
+            other.save_settings(&settings).unwrap();
+        }
+
+        let stale = request(&worker, 1, old_click);
+        assert!(!stale.upload);
+        let refreshed = stale.snapshot.unwrap();
+        assert_eq!(refreshed.settings, settings);
+        assert_eq!(refreshed.reports[0].status, ReportStatus::NeedsConsent);
+        let current_id = refreshed.destination_id.unwrap();
+        assert_ne!(current_id, shown);
+        assert!(!request(&worker, 2, Action::Retry).upload);
+        let fresh = request(&worker, 3, Action::Send(report.id, current_id));
+        assert!(fresh.upload);
+        assert_eq!(
+            fresh.snapshot.unwrap().reports[0].status,
+            ReportStatus::Queued
+        );
+    }
 }
 
 #[test]

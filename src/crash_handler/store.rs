@@ -1,6 +1,7 @@
 use super::runtime_log::{emit, Event};
 use super::{privacy::sanitize_stack, CrashSettings};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -17,6 +18,8 @@ pub(super) const MAX_DUMP: u64 = 10_000_000;
 pub enum ReportStatus {
     /// Not yet authorized for transmission.
     Pending,
+    /// A previously queued report needs explicit approval for the current destination.
+    NeedsConsent,
     /// User explicitly chose local-only storage.
     Declined,
     /// User authorized textual submission, including retry after failure.
@@ -39,6 +42,79 @@ pub struct CrashReport {
     pub arch: String,
     pub stack: String,
     pub status: ReportStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) approval: Option<Approval>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Approval {
+    destination_id: String,
+    id: String,
+}
+
+// Preserve the original flat settings format. Only this store owns the generation.
+#[derive(Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct StoredSettings {
+    auto_submit: bool,
+    server_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    destination_generation: Option<String>,
+}
+
+#[derive(PartialEq, Eq)]
+pub(super) struct Destination {
+    pub url: url::Url,
+    id: String,
+    legacy: bool,
+}
+
+impl StoredSettings {
+    fn same_endpoint(&self, new: &str) -> bool {
+        if self.server_url == new {
+            return true;
+        }
+        matches!((super::transport::endpoint(&self.server_url), super::transport::endpoint(new)),
+            (Ok(saved), Ok(next)) if saved == next)
+    }
+
+    fn destination(&self) -> io::Result<Destination> {
+        let url = super::transport::endpoint(&self.server_url)?;
+        let mut hash = Sha256::new();
+        hash.update(self.destination_generation.as_deref().unwrap_or_default());
+        hash.update([0]);
+        hash.update(url.as_str());
+        Ok(Destination {
+            url,
+            id: format!("{:x}", hash.finalize()),
+            legacy: self.destination_generation.is_none(),
+        })
+    }
+}
+
+impl CrashReport {
+    fn authorize(&mut self, destination: &Destination) -> io::Result<()> {
+        self.approval = Some(Approval {
+            destination_id: destination.id.clone(),
+            id: random_id()?,
+        });
+        self.status = ReportStatus::Queued;
+        Ok(())
+    }
+
+    fn status_at(&self, destination: Option<&Destination>) -> ReportStatus {
+        if self.status == ReportStatus::Queued
+            && !destination.is_some_and(|d| match &self.approval {
+                Some(approval) => approval.destination_id == d.id,
+                None => d.legacy, // Both files predate destination-bound approval.
+            })
+        {
+            ReportStatus::NeedsConsent
+        } else {
+            self.status
+        }
+    }
 }
 
 /// Owned report directory. Operations serialize across processes with a file lock;
@@ -76,6 +152,7 @@ impl CrashStore {
                 arch: std::env::consts::ARCH.into(),
                 stack: sanitize_stack(stack),
                 status: ReportStatus::Pending,
+                approval: None,
             },
         })
     }
@@ -136,6 +213,7 @@ impl CrashStore {
             arch: std::env::consts::ARCH.into(),
             stack: sanitize_stack(stack),
             status: ReportStatus::Pending,
+            approval: None,
         };
         self.write(&self.path(&report.id, "json")?, &report)?;
         self.enforce_unlocked()?;
@@ -150,6 +228,7 @@ impl CrashStore {
     /// towards retention; settings/queue files never become phantom reports.
     pub fn list(&self) -> io::Result<Vec<CrashReport>> {
         let _lock = self.lock()?;
+        let destination = self.settings_unlocked().and_then(|s| s.destination()).ok();
         let mut reports = Vec::new();
         for entry in fs::read_dir(&self.root)? {
             let path = entry?.path();
@@ -165,6 +244,7 @@ impl CrashStore {
             reject_link(&path)?;
             match read_json::<CrashReport>(&path) {
                 Ok(mut report) if report.id == id => {
+                    report.status = report.status_at(destination.as_ref());
                     report.stack = sanitize_stack(&report.stack);
                     reports.push(report);
                 }
@@ -179,71 +259,130 @@ impl CrashStore {
     /// should be marked Submitted; this method performs no network operation.
     pub fn set_status(&self, id: &str, status: ReportStatus) -> io::Result<()> {
         let _lock = self.lock()?;
-        let path = self.path(id, "json")?;
-        let mut report: CrashReport = read_json(&path)?;
+        let mut report = self.read_report(id)?;
+        if status == ReportStatus::Queued {
+            report.authorize(&self.settings_unlocked()?.destination()?)?;
+        } else {
+            report.approval = None;
+            report.status = status;
+        }
+        self.write(&self.path(id, "json")?, &report)
+    }
+
+    fn read_report(&self, id: &str) -> io::Result<CrashReport> {
+        let report: CrashReport = read_json(&self.path(id, "json")?)?;
         if report.id != id {
             return Err(invalid("Mismatched report ID"));
         }
-        report.status = status;
-        self.write(&path, &report)
+        Ok(report)
     }
 
     /// Explicitly authorize textual submission and future retries. Binary dumps
     /// are never authorized by this operation. Submitted reports are not requeued.
     pub fn queue_report(&self, id: &str) -> io::Result<bool> {
         let _lock = self.lock()?;
-        let path = self.path(id, "json")?;
-        let mut report: CrashReport = read_json(&path)?;
-        if report.id != id {
-            return Err(invalid("Mismatched report ID"));
+        self.queue_unlocked(id, &self.settings_unlocked()?.destination()?)
+    }
+
+    pub(super) fn queue_report_for(&self, id: &str, displayed: &str) -> io::Result<bool> {
+        let _lock = self.lock()?;
+        let destination = self.settings_unlocked()?.destination()?;
+        if destination.id != displayed {
+            return Err(invalid("Saved destination changed"));
         }
+        self.queue_unlocked(id, &destination)
+    }
+
+    fn queue_unlocked(&self, id: &str, destination: &Destination) -> io::Result<bool> {
+        let mut report = self.read_report(id)?;
         if report.status == ReportStatus::Submitted {
             return Ok(false);
         }
-        report.status = ReportStatus::Queued;
-        self.write(&path, &report)?;
+        report.authorize(destination)?;
+        self.write(&self.path(id, "json")?, &report)?;
         emit(Event::ReportQueued, Some(id), None);
         Ok(true)
     }
 
-    // Compare under the store lock so stale worker snapshots cannot override a
-    // decline/delete. Network I/O must never hold this lock. In-flight HTTP cannot
-    // be recalled; changing consent prevents subsequent requests/state promotion.
-    pub(super) fn transition_status(
-        &self,
-        id: &str,
-        expected: ReportStatus,
-        next: ReportStatus,
-    ) -> io::Result<bool> {
+    // A sent request cannot be recalled. Clearing the approval also prevents its
+    // eventual acknowledgment from consuming any later approval for this report.
+    pub(super) fn keep_local(&self, id: &str) -> io::Result<bool> {
         let _lock = self.lock()?;
-        let path = self.path(id, "json")?;
-        let mut report: CrashReport = match read_json(&path) {
+        let mut report = match self.read_report(id) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
             result => result?,
         };
-        if report.id != id {
-            return Err(invalid("Mismatched report ID"));
-        }
-        if report.status != expected {
+        if report.status == ReportStatus::Submitted {
             return Ok(false);
         }
-        report.status = next;
-        self.write(&path, &report)?;
+        report.status = ReportStatus::Declined;
+        report.approval = None;
+        self.write(&self.path(id, "json")?, &report)?;
         Ok(true)
     }
 
-    pub(super) fn queued_report(&self, id: &str) -> io::Result<Option<CrashReport>> {
+    pub(super) fn upload_destination(&self) -> io::Result<Destination> {
         let _lock = self.lock()?;
-        let path = self.path(id, "json")?;
-        let mut report: CrashReport = match read_json(&path) {
+        self.settings_unlocked()?.destination()
+    }
+
+    pub(super) fn prepare_upload(
+        &self,
+        id: &str,
+        target: &Destination,
+    ) -> io::Result<Option<CrashReport>> {
+        let _lock = self.lock()?;
+        let settings = self.settings_unlocked()?;
+        if settings.destination().ok().as_ref() != Some(target) {
+            return Ok(None);
+        }
+        let mut report = match self.read_report(id) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             result => result?,
         };
-        if report.id != id {
-            return Err(invalid("Mismatched report ID"));
+        match report.status_at(Some(target)) {
+            ReportStatus::Pending if settings.auto_submit => {
+                report.authorize(target)?;
+                self.write(&self.path(id, "json")?, &report)?;
+            }
+            ReportStatus::Queued => (),
+            _ => return Ok(None),
         }
         report.stack = sanitize_stack(&report.stack);
-        Ok((report.status == ReportStatus::Queued).then_some(report))
+        Ok(Some(report))
+    }
+
+    fn current_approval(
+        &self,
+        sent: &CrashReport,
+        target: &Destination,
+    ) -> io::Result<Option<CrashReport>> {
+        if self.settings_unlocked()?.destination().ok().as_ref() != Some(target) {
+            return Ok(None);
+        }
+        let report = match self.read_report(&sent.id) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            result => result?,
+        };
+        Ok((report.status_at(Some(target)) == ReportStatus::Queued
+            && report.approval == sent.approval)
+            .then_some(report))
+    }
+
+    pub(super) fn may_send(&self, sent: &CrashReport, target: &Destination) -> io::Result<bool> {
+        let _lock = self.lock()?;
+        Ok(self.current_approval(sent, target)?.is_some())
+    }
+
+    pub(super) fn acknowledge(&self, sent: &CrashReport, target: &Destination) -> io::Result<bool> {
+        let _lock = self.lock()?;
+        let Some(mut report) = self.current_approval(sent, target)? else {
+            return Ok(false);
+        };
+        report.status = ReportStatus::Submitted;
+        report.approval = None;
+        self.write(&self.path(&sent.id, "json")?, &report)?;
+        Ok(true)
     }
 
     pub(super) fn try_upload_lock(&self) -> io::Result<File> {
@@ -325,11 +464,29 @@ impl CrashStore {
 
     /// Corrupt sharing settings fail closed; absence means no automatic upload.
     pub fn settings(&self) -> io::Result<CrashSettings> {
+        self.sharing_settings().map(|(settings, _)| settings)
+    }
+
+    /// Return the UI preferences and the identity of the displayed destination
+    /// from the same read, so a delayed consent click cannot authorize a later save.
+    pub(super) fn sharing_settings(&self) -> io::Result<(CrashSettings, Option<String>)> {
         let _lock = self.lock()?;
+        let stored = self.settings_unlocked()?;
+        let id = stored.destination().ok().map(|d| d.id);
+        Ok((
+            CrashSettings {
+                server_url: stored.server_url,
+                auto_submit: stored.auto_submit,
+            },
+            id,
+        ))
+    }
+
+    fn settings_unlocked(&self) -> io::Result<StoredSettings> {
         let path = self.root.join("settings.json");
         reject_link(&path)?;
         match read_json(&path) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(CrashSettings::default()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(StoredSettings::default()),
             result => result,
         }
     }
@@ -339,7 +496,34 @@ impl CrashStore {
         let _lock = self.lock()?;
         let path = self.root.join("settings.json");
         reject_link(&path)?;
-        self.write(&path, settings)
+        let previous = match self.settings_unlocked() {
+            Ok(stored) => Some(stored),
+            // Explicit settings repair must also invalidate the unknown old destination.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::InvalidData
+                        | io::ErrorKind::UnexpectedEof
+                        | io::ErrorKind::InvalidInput
+                ) =>
+            {
+                None
+            }
+            Err(e) => return Err(e),
+        };
+        let destination_generation =
+            match previous.filter(|old| old.same_endpoint(&settings.server_url)) {
+                Some(old) => old.destination_generation,
+                None => Some(random_id()?),
+            };
+        self.write(
+            &path,
+            &StoredSettings {
+                auto_submit: settings.auto_submit,
+                server_url: settings.server_url.clone(),
+                destination_generation,
+            },
+        )
     }
 
     fn write(&self, path: &Path, value: &impl Serialize) -> io::Result<()> {
@@ -446,7 +630,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> io::Result<T> {
     if file.metadata()?.len() > MAX_JSON {
         return Err(invalid("Crash metadata exceeds limit"));
     }
-    serde_json::from_reader(file.take(MAX_JSON + 1)).map_err(io::Error::other)
+    serde_json::from_reader(file.take(MAX_JSON + 1)).map_err(io::Error::from)
 }
 
 pub(super) fn reject_link(path: &Path) -> io::Result<()> {

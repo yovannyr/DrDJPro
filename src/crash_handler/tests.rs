@@ -33,8 +33,14 @@ fn report_build_identity_is_additive_and_rejects_arbitrary_strings() {
 fn consent_states_and_settings_survive_restart() {
     let (_temp, store) = store();
     assert!(!store.settings().unwrap().auto_submit);
+    let settings = CrashSettings {
+        auto_submit: true,
+        server_url: "https://example.invalid/reports".into(),
+    };
+    store.save_settings(&settings).unwrap();
     for state in [
         ReportStatus::Pending,
+        ReportStatus::NeedsConsent,
         ReportStatus::Declined,
         ReportStatus::Queued,
         ReportStatus::Submitted,
@@ -53,11 +59,6 @@ fn consent_states_and_settings_survive_restart() {
             state
         );
     }
-    let settings = CrashSettings {
-        auto_submit: true,
-        server_url: "https://example.invalid/reports".into(),
-    };
-    store.save_settings(&settings).unwrap();
     assert_eq!(
         CrashStore::open(store.root().into())
             .unwrap()
@@ -65,7 +66,37 @@ fn consent_states_and_settings_survive_restart() {
             .unwrap(),
         settings
     );
-    assert_eq!(store.list().unwrap().len(), 4);
+    assert_eq!(store.list().unwrap().len(), 5);
+}
+
+#[test]
+fn repairing_missing_or_corrupt_settings_requires_fresh_consent_even_at_same_url() {
+    for corrupt in [false, true] {
+        let (_temp, store) = store();
+        let settings = CrashSettings {
+            auto_submit: true,
+            server_url: "https://example.invalid/report".into(),
+        };
+        store.save_settings(&settings).unwrap();
+        let report = store.insert("frame").unwrap();
+        store.queue_report(&report.id).unwrap();
+        let path = store.root().join("settings.json");
+        if corrupt {
+            fs::write(path, b"{").unwrap();
+        } else {
+            fs::remove_file(path).unwrap();
+        }
+        store.save_settings(&settings).unwrap();
+        let reopened = CrashStore::open(store.root().into()).unwrap();
+        assert_eq!(
+            reopened.list().unwrap()[0].status,
+            ReportStatus::NeedsConsent
+        );
+        assert!(reopened
+            .prepare_upload(&report.id, &reopened.upload_destination().unwrap())
+            .unwrap()
+            .is_none());
+    }
 }
 
 #[test]
