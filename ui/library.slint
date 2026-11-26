@@ -248,6 +248,7 @@ export component TrackLibrary inherits Rectangle {
     property <bool> columns-open;
     callback change-column(int, int);
     callback analyze();
+    callback reanalyze();
     callback add-phrase-cues();
     in property <TempoComparisonView> tempo-comparison;
     callback open-tempo-comparison();
@@ -344,6 +345,7 @@ export component TrackLibrary inherits Rectangle {
     in property <string> layer-status;
     in-out property <bool> split-waveform;
     in property <bool> can-analyze;
+    in property <bool> can-reanalyze;
     in property <string> analysis-progress;
     in property <bool> analysis-running;
     in-out property <int> tab;
@@ -428,7 +430,11 @@ export component TrackLibrary inherits Rectangle {
         }
         if tab == 4 && !root.diagnosis-visible && !root.gig-visible && !root.clip-check-open && !root.local-keys-open && !root.chord-pair-open && !root.cue-trim-open : VerticalLayout {
             spacing: 2px;
-            if root.analysis-progress != "" : Text { height: 14px; text: root.analysis-progress; accessible-role: text; accessible-label: "Library analysis progress"; accessible-description: root.analysis-progress; font-size: 11px; color: #cccccc; overflow: elide; }
+            HorizontalLayout {
+                LibraryButton { text: "Re-analyze all"; accessible-label: "Re-analyze all available library files"; enabled: root.can-reanalyze; clicked => { root.reanalyze(); } }
+                if root.analysis-progress != "" : Text { height: 14px; text: root.analysis-progress; accessible-role: text; accessible-label: "Library analysis progress"; accessible-description: root.analysis-progress; font-size: 11px; color: #cccccc; overflow: elide; }
+                Rectangle { horizontal-stretch: 1; }
+            }
             HorizontalLayout {
                 spacing: 3px;
                 if root.assistant-enabled : LibraryButton { text: "Similar"; accessible-label: "Suggest a similar track"; enabled: !root.busy && !root.assistant-running && root.selection > 0; clicked => { root.suggest-track(false); } }
@@ -695,7 +701,7 @@ export component TrackLibrary inherits Rectangle {
                 for row[index] in root.rows : Rectangle {
                     height: 22px; background: root.selection == row.id ? #07577e : (mod(index, 2) == 0 ? #202020 : #111111);
                     accessible-role: button; accessible-label: "Library track " + row.id;
-                    accessible-description: (row.available ? "" : "Missing file: ") + row.name + " " + row.artist + " BPM " + row.bpm + " Key " + row.key + " " + row.album + " " + row.prepare-duration + " Gain dB " + row.gain + " " + row.analysis-status + " " + row.path + (row.metadata-error == "" ? "" : " Metadata unavailable: " + row.metadata-error);
+                    accessible-description: (row.available ? "" : "Missing file: ") + row.name + " " + row.artist + " BPM " + row.bpm + " Key " + row.key + " Energy " + row.energy + " " + row.album + " " + row.prepare-duration + " Gain dB " + row.gain + " " + row.analysis-status + " " + row.path + (row.metadata-error == "" ? "" : " Metadata unavailable: " + row.metadata-error);
                     accessible-action-default => { root.select-track(row.id); nav.focus(); }
                     HorizontalLayout {
                         spacing: 0px;
@@ -709,7 +715,7 @@ export component TrackLibrary inherits Rectangle {
                             }
                         if column.id != 11 : Text {
                             width: parent.width; height: parent.height;
-                            text: column.id == 6 ? "" + row.id : column.id == 0 ? row.name : column.id == 3 ? (row.artist == "" ? "—" : row.artist) : column.id == 4 ? (row.album == "" ? "—" : row.album) : column.id == 7 ? row.bpm : column.id == 8 ? row.key : column.id == 9 ? row.gain : column.id == 10 ? (row.available ? row.analysis-status : "Missing") : column.id == 5 ? row.prepare-duration : column.id == 2 ? row.path : (row.available ? row.format : "MISSING");
+                            text: column.id == 6 ? "" + row.id : column.id == 0 ? row.name : column.id == 3 ? (row.artist == "" ? "—" : row.artist) : column.id == 4 ? (row.album == "" ? "—" : row.album) : column.id == 7 ? row.bpm : column.id == 8 ? row.key : column.id == 12 ? row.energy : column.id == 9 ? row.gain : column.id == 10 ? (row.available ? row.analysis-status : "Missing") : column.id == 5 ? row.prepare-duration : column.id == 2 ? row.path : (row.available ? row.format : "MISSING");
                             font-size: 11px; vertical-alignment: center; color: column.id == 7 ? #4fc2ed : column.id == 8 ? #d597ed : #cccccc; overflow: elide;
                             accessible-role: text; accessible-label: "Track " + row.id + " " + column.sort-label;
                             accessible-description: self.text;

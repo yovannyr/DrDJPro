@@ -227,6 +227,12 @@ impl slint::Model for LibraryRows {
 fn library_row(track: &crate::library::Track) -> crate::LibraryRow {
     let analysis = track.metadata.analysis.as_ref();
     crate::LibraryRow {
+        energy: match track.metadata.music_labels.energy() {
+            Some(n) => n.to_string().into(),
+            None => track
+                .estimated_energy()
+                .map_or_else(|| "—".into(), |n| format!("{n} (estimated)").into()),
+        },
         cover_key: track
             .metadata
             .music_labels
@@ -1477,7 +1483,13 @@ impl AudioController {
         let weak = Rc::downgrade(self);
         ui.on_analyze_library(move || {
             if let Some(c) = weak.upgrade() {
-                c.start_analysis();
+                c.start_analysis(false);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        ui.on_reanalyze_library(move || {
+            if let Some(c) = weak.upgrade() {
+                c.start_analysis(true);
             }
         });
         let weak = Rc::downgrade(self);
@@ -7743,7 +7755,7 @@ impl AudioController {
     pub fn import_paths(&self, paths: Vec<PathBuf>) {
         self.start_import(Arc::new(move || Some(paths.clone())));
     }
-    fn start_analysis(&self) {
+    fn start_analysis(&self, include_analyzed: bool) {
         let Some(ui) = self.ui.upgrade() else { return };
         if !self.storage_ready.get()
             || self.pending.borrow().is_some()
@@ -7754,7 +7766,7 @@ impl AudioController {
             ui.set_status("Wait for the current operation before analyzing".into());
             return;
         }
-        let queue = self.library.borrow().analysis_targets();
+        let queue = self.library.borrow().analysis_targets(include_analyzed);
         if queue.is_empty() {
             ui.set_status("No new or failed available library files to analyze".into());
             return;
@@ -8059,6 +8071,7 @@ impl AudioController {
         let selected = library.selected_id();
         self.publish_track_selection(&ui, selected);
         ui.set_library_has_analysis_targets(library.has_analysis_targets());
+        ui.set_library_has_available_tracks(library.has_available_tracks());
         ui.set_library_can_relocate_selected(
             library
                 .track_by_id(selected)
@@ -19257,7 +19270,7 @@ mod tests {
         ui.show().unwrap();
         ui.invoke_library_tab_selected(4);
         finish_search(&c);
-        for field in 0..11 {
+        for field in (0..11).chain([12]) {
             scroll_table_field(&ui, field);
             let label = format!(
                 "Sort library by {}",
@@ -19738,6 +19751,25 @@ mod tests {
         ui.invoke_analyze_library();
         assert!(c.pending_import.borrow().is_none());
         assert!(ui.get_status().contains("No new or failed"));
+        let labels = crate::track_metadata::MusicLabels::parse("", "9").unwrap();
+        ui.invoke_reanalyze_library();
+        assert_eq!(c.analysis_batch.borrow().as_ref().unwrap().total, 4);
+        // A DJ edit made while the worker holds the old metadata must win.
+        c.library.borrow_mut().set_music_labels(1, labels).unwrap();
+        finish_import(&c);
+        {
+            let library = c.library.borrow();
+            let track = library.track_by_id(1).unwrap();
+            assert!(track.estimated_energy().is_some());
+            assert_eq!(library_row(track).energy, "9");
+            assert_eq!(library_row(track).cover_energy, "9");
+            let other = library.track_by_id(4).unwrap();
+            assert_eq!(
+                library_row(other).energy.as_str(),
+                format!("{} (estimated)", other.estimated_energy().unwrap())
+            );
+            assert!(library_row(other).cover_energy.is_empty());
+        }
         c.close_library().unwrap();
     }
     #[test]
@@ -19765,6 +19797,7 @@ mod tests {
             analysis: Some(crate::audio_analyzer::TrackAnalysisResult {
                 beat_anchor_ms: None,
                 analyzed_ms: None,
+                estimated_energy: Some(6),
                 phrase_boundaries_ms: vec![],
                 file_path: path.to_string_lossy().into_owned(),
                 bpm: 127.,
@@ -19801,6 +19834,8 @@ mod tests {
         assert_eq!(row.prepare_duration, "04:14.90");
         assert_eq!(row.gain, "+0.0");
         assert_eq!(row.analysis_status, "Analyzed");
+        assert_eq!(row.energy, "6 (estimated)");
+        assert!(row.cover_energy.is_empty());
         for (width, height) in [(850., 860.), (1280., 860.)] {
             ui.window().set_size(slint::LogicalSize::new(width, height));
             for label in [
@@ -19957,7 +19992,7 @@ mod tests {
         );
         assert!(ui.get_analysis_summary().contains("Recommended gain"));
         assert_eq!(
-            c.library.borrow().analysis_targets(),
+            c.library.borrow().analysis_targets(false),
             VecDeque::from([(3, std::fs::canonicalize(third.path()).unwrap())]),
             "SQLite restart must retain healthy results and retry only the unfinished file"
         );
@@ -20456,6 +20491,7 @@ mod tests {
                         bpm: 120.,
                         beat_anchor_ms: Some(250),
                         analyzed_ms: Some(20_000),
+                        estimated_energy: Some(6),
                         phrase_boundaries_ms: vec![8000],
                         musical_key: String::new(),
                         gain: 1.,

@@ -442,6 +442,14 @@ impl SearchIndex {
 }
 
 impl Track {
+    pub(crate) fn estimated_energy(&self) -> Option<u8> {
+        self.metadata
+            .analysis
+            .as_ref()
+            .filter(|a| !a.is_corrupt)?
+            .estimated_energy
+    }
+
     fn refresh_search(&mut self) {
         let path = self.path.to_string_lossy().to_lowercase();
         let title = self.metadata.title.to_lowercase();
@@ -483,6 +491,7 @@ struct SearchRecord {
     key: Option<(u8, bool)>,
     gain: Option<f32>,
     analysis_status: u8,
+    energy: Option<u8>,
     planning: planning::PlanningData,
 }
 
@@ -631,6 +640,7 @@ impl SearchRecord {
             }
         }
         let order = match field {
+            12 => optional(self.energy, other.energy, descending, |a, b| a.cmp(&b)),
             5 => optional(self.duration, other.duration, descending, |a, b| a.cmp(&b)),
             7 => optional(self.bpm, other.bpm, descending, |a, b| a.total_cmp(&b)),
             8 => optional(self.key.as_ref(), other.key.as_ref(), descending, |a, b| {
@@ -819,6 +829,11 @@ impl Library {
                 })
             }),
             gain: track.metadata.analysis.as_ref().map(|a| a.gain),
+            energy: track
+                .metadata
+                .music_labels
+                .energy()
+                .or_else(|| track.estimated_energy()),
             analysis_status: if !track.available {
                 2
             } else {
@@ -1466,8 +1481,17 @@ impl Library {
         if self.tracks[index].metadata.music_labels == labels {
             return Ok(false);
         }
+        let energy_changed = self.tracks[index].metadata.music_labels.energy() != labels.energy();
         self.tracks[index].metadata.music_labels = labels;
-        self.update_planning_record(index);
+        if energy_changed {
+            self.update_search_record(index);
+            self.analysis_revision += 1;
+            if self.sort_field == 12 {
+                *self.view_cache.get_mut() = None;
+            }
+        } else {
+            self.update_planning_record(index);
+        }
         self.mark_track_dirty(index);
         Ok(true)
     }
@@ -1515,7 +1539,7 @@ impl Library {
         self.tracks[index].metadata.analysis = Some(analysis);
         self.update_search_record(index);
         self.analysis_revision += 1;
-        if (7..=10).contains(&self.sort_field) {
+        if matches!(self.sort_field, 7..=10 | 12) {
             *self.view_cache.get_mut() = None;
         }
         self.mark_track_dirty(index);
@@ -1709,7 +1733,7 @@ impl Library {
                     self.tracks[index].available = true;
                     self.update_search_record(index);
                     self.analysis_revision += 1;
-                    if (7..=10).contains(&self.sort_field) {
+                    if matches!(self.sort_field, 7..=10 | 12) {
                         *self.view_cache.get_mut() = None;
                     }
                 }
@@ -1776,12 +1800,15 @@ impl Library {
         }
         Ok(self.revision != before)
     }
-    pub(crate) fn analysis_targets(&self) -> VecDeque<(i32, PathBuf)> {
+    pub(crate) fn analysis_targets(&self, include_analyzed: bool) -> VecDeque<(i32, PathBuf)> {
         self.tracks
             .iter()
-            .filter(|track| Self::needs_analysis(track))
+            .filter(|track| track.available && (include_analyzed || Self::needs_analysis(track)))
             .map(|track| (track.id, track.path.clone()))
             .collect()
+    }
+    pub(crate) fn has_available_tracks(&self) -> bool {
+        self.tracks.iter().any(|t| t.available)
     }
     pub(crate) fn has_analysis_targets(&self) -> bool {
         self.tracks.iter().any(Self::needs_analysis)
@@ -1792,7 +1819,7 @@ impl Library {
                 .metadata
                 .analysis
                 .as_ref()
-                .is_none_or(|analysis| analysis.is_corrupt)
+                .is_none_or(|analysis| analysis.is_corrupt || analysis.estimated_energy.is_none())
     }
     pub fn set_query(&mut self, query: String) {
         let normalized = query.trim().to_lowercase();
@@ -1833,7 +1860,11 @@ impl Library {
         self.sort_requested = true;
         self.crate_column_sort = self.active_crate > 0;
         *self.view_cache.get_mut() = None;
-        let field = field.clamp(0, 10);
+        let field = if field == 12 {
+            field
+        } else {
+            field.clamp(0, 10)
+        };
         if field == self.sort_field {
             self.descending = !self.descending;
         } else {
@@ -1848,7 +1879,7 @@ impl Library {
         SearchSpec {
             generation,
             revision: self.search_revision
-                + if (7..=10).contains(&self.sort_field) {
+                + if matches!(self.sort_field, 7..=10 | 12) {
                     self.analysis_revision
                 } else {
                     0
@@ -2279,6 +2310,7 @@ mod tests {
                     crate::audio_analyzer::TrackAnalysisResult {
                         beat_anchor_ms: None,
                         analyzed_ms: None,
+                        estimated_energy: Some(6),
                         phrase_boundaries_ms: vec![],
                         file_path: path.to_string_lossy().into_owned(),
                         bpm: if index == 0 { 100. } else { 90. },
@@ -2290,6 +2322,12 @@ mod tests {
                 )
                 .unwrap();
         }
+        library
+            .set_music_labels(
+                2,
+                crate::track_metadata::MusicLabels::parse("", "10").unwrap(),
+            )
+            .unwrap();
         for (field, ascending, descending) in [
             (0, vec![2, 1, 3], vec![3, 1, 2]),
             (1, vec![3, 1, 2], vec![2, 1, 3]),
@@ -2302,6 +2340,7 @@ mod tests {
             (8, vec![2, 1, 3], vec![1, 2, 3]),
             (9, vec![2, 1, 3], vec![1, 2, 3]),
             (10, vec![1, 2, 3], vec![3, 2, 1]),
+            (12, vec![1, 2, 3], vec![2, 1, 3]),
         ] {
             library.sort(field);
             if library.descending {
@@ -2414,16 +2453,28 @@ mod tests {
         healthy.is_corrupt = true;
         library.set_analysis(2, second.path(), healthy).unwrap();
         assert_eq!(
-            library.analysis_targets(),
+            library.analysis_targets(false),
             VecDeque::from([(2, second.path().into()), (3, third.path().into())])
         );
         assert!(library.has_analysis_targets());
+        assert_eq!(library.analysis_targets(true).len(), 3);
         let mut restored = Library::restore(library.catalog()).unwrap();
-        assert_eq!(restored.analysis_targets(), library.analysis_targets());
+        assert_eq!(
+            restored.analysis_targets(false),
+            library.analysis_targets(false)
+        );
         restored.tracks[1].available = false;
         restored.tracks[2].available = false;
-        assert!(restored.analysis_targets().is_empty());
+        assert!(restored.analysis_targets(false).is_empty());
         assert!(!restored.has_analysis_targets());
+        assert_eq!(restored.analysis_targets(true).len(), 1);
+        restored.tracks[0]
+            .metadata
+            .analysis
+            .as_mut()
+            .unwrap()
+            .estimated_energy = None;
+        assert_eq!(restored.analysis_targets(false).len(), 1);
     }
 
     #[test]

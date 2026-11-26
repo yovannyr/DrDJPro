@@ -107,6 +107,10 @@ impl AudioController {
     ) -> Result<(), String> {
         if self.library.borrow_mut().set_music_labels(id, labels)? {
             self.library_changed();
+            if ui.get_table_sort_field() == 12 {
+                self.publish_library();
+                return Ok(());
+            }
             let rows = ui.get_library_rows();
             if let Some(model) = rows.as_any().downcast_ref::<LibraryRows>() {
                 if let Some(index) = model.rows.iter().position(|&visible| visible == id) {
