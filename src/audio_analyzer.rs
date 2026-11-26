@@ -74,6 +74,9 @@ pub struct TrackAnalysisResult {
     /// Up to seven internal spectral changes, in source milliseconds before grid alignment.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub phrase_boundaries_ms: Vec<u32>,
+    /// Offline estimate, independent of a DJ-confirmed energy rating.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_energy: Option<u8>,
     /// Tonart in Camelot-Notation (z. B. "8A", "11B"). Leer bedeutet "nicht bestimmbar".
     pub musical_key: String,
     pub gain: f32,
@@ -82,7 +85,8 @@ pub struct TrackAnalysisResult {
 }
 impl TrackAnalysisResult {
     pub(crate) fn validate(&self) -> bool {
-        drdj_proto::valid_phrase_boundaries(&self.phrase_boundaries_ms, self.analyzed_ms)
+        self.estimated_energy.is_none_or(|n| (1..=10).contains(&n))
+            && drdj_proto::valid_phrase_boundaries(&self.phrase_boundaries_ms, self.analyzed_ms)
             && self.analyzed_ms.is_none_or(|ms| {
                 ms <= 3_600_000 && self.beat_anchor_ms.is_none_or(|anchor| anchor <= ms)
             })
@@ -124,6 +128,9 @@ impl fmt::Display for AnalyzerError {
 impl std::error::Error for AnalyzerError {}
 
 pub struct AudioAnalyzer;
+
+mod track_energy;
+use track_energy::TrackEnergy;
 
 /// Sammelt eine RMS-Hüllkurve des Mono-Mixdowns mit fester Rate (`env_rate`).
 struct EnvelopeBuilder {
@@ -484,6 +491,7 @@ impl AudioAnalyzer {
         let mut first_spec: Option<SignalSpec> = None;
         let mut meter: Option<EbuR128> = None;
         let mut envelope: Option<EnvelopeBuilder> = None;
+        let mut energy = None;
         let mut chroma: Option<ChromaBuilder> = None;
 
         let mut packet_count: u64 = 0;
@@ -506,6 +514,7 @@ impl AudioAnalyzer {
                 );
                 envelope = Some(EnvelopeBuilder::new(spec.rate));
                 chroma = Some(ChromaBuilder::new(spec.rate));
+                energy = Some(TrackEnergy::new(spec.rate));
             }
             if first_spec != Some(spec) {
                 return Err(AnalyzerError::DecoderError(
@@ -539,6 +548,9 @@ impl AudioAnalyzer {
                     ));
                 }
                 let mono = frame_sum / channels as f32;
+                if let Some(energy) = energy.as_mut() {
+                    energy.push(mono, frame_peak);
+                }
                 if let Some(env) = envelope.as_mut() {
                     env.push_frame(mono);
                 }
@@ -742,6 +754,7 @@ impl AudioAnalyzer {
             bpm: proposal.map_or(bpm, |p| p.0),
             beat_anchor_ms: proposal.map(|p| p.1),
             analyzed_ms,
+            estimated_energy: energy.filter(|_| !is_corrupt).and_then(TrackEnergy::finish),
             phrase_boundaries_ms: chroma
                 .filter(|_| !is_corrupt)
                 .map_or_else(Vec::new, |c| c.phrases.boundaries()),
@@ -970,7 +983,15 @@ mod tests {
     #[test]
     fn persisted_analysis_rejects_invalid_values_and_unknown_fields() {
         let mut value = AudioAnalyzer::analyze_file(silence_file().path()).unwrap();
+        assert_eq!(value.estimated_energy, Some(1));
+        for invalid in [0, 11] {
+            value.estimated_energy = Some(invalid);
+            assert!(!value.validate());
+        }
+        value.estimated_energy = None;
+        assert!(value.validate());
         let json = serde_json::to_value(&value).unwrap();
+        assert!(json.get("estimated_energy").is_none());
         let mut invalid = json.clone();
         invalid["unknown"] = true.into();
         assert!(serde_json::from_value::<TrackAnalysisResult>(invalid).is_err());

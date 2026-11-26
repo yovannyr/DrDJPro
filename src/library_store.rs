@@ -2393,6 +2393,7 @@ mod tests {
             is_corrupt: false,
             beat_anchor_ms: None,
             analyzed_ms: None,
+            estimated_energy: Some(6),
             phrase_boundaries_ms: vec![],
             waveform_overview: vec![],
         };
@@ -2575,7 +2576,7 @@ mod tests {
             )
             .unwrap();
         let upgraded = store.read_table_columns().unwrap();
-        assert_eq!(upgraded.order.len(), 12);
+        assert_eq!(upgraded.order.len(), crate::table_columns::COLUMN_COUNT);
         assert_eq!(upgraded.hidden, vec![3, 7]);
         store
             .save_session_state_with_columns(
@@ -3880,6 +3881,7 @@ mod tests {
         let analysis = crate::audio_analyzer::TrackAnalysisResult {
             beat_anchor_ms: Some(420),
             analyzed_ms: Some(45000),
+            estimated_energy: Some(6),
             phrase_boundaries_ms: vec![16000, 32000],
             file_path: data.tracks[0].path.to_string_lossy().into_owned(),
             bpm: 123.4,

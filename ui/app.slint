@@ -919,6 +919,7 @@ export component AppWindow inherits Window {
             || root.cover-label-editor.open || root.metadata-diagnosis.open || root.clip-check-open);
     changed gig-planning-obsolete => { if root.gig-planning-obsolete { root.gig-planning-open = false; } }
     callback analyze-library();
+    callback reanalyze-library();
     callback add-phrase-cues();
     callback suggest-track(bool);
     in property <bool> assistant-enabled;
@@ -927,6 +928,7 @@ export component AppWindow inherits Window {
     in property <string> analysis-summary;
     in property <string> analysis-progress;
     in property <bool> library-has-analysis-targets;
+    in property <bool> library-has-available-tracks;
     in property <bool> analysis-running;
     in property <[float]> analysis-waveform;
     in property <[float]> layer-percussion;
@@ -1572,6 +1574,8 @@ Rectangle {
             analysis-running: root.analysis-running;
             can-analyze: root.library-has-analysis-targets && !root.loading && !root.library-busy;
             analyze => { root.analyze-library(); }
+            can-reanalyze: root.library-has-available-tracks && !root.loading && !root.library-busy;
+            reanalyze => { root.reanalyze-library(); }
             assistant-enabled: root.assistant-enabled;
             assistant-running: root.assistant-running;
             suggest-track(transition) => { root.suggest-track(transition); }

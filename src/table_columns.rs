@@ -1,7 +1,7 @@
 //! Persisted track-table presentation, independent of track identities.
 use serde::{Deserialize, Serialize};
 
-pub const COLUMN_COUNT: usize = 12;
+pub const COLUMN_COUNT: usize = 13;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,7 +21,7 @@ impl Default for TableColumns {
     fn default() -> Self {
         Self {
             version: 1,
-            order: vec![6, 11, 0, 3, 7, 8, 4, 5, 9, 10, 2, 1],
+            order: vec![6, 11, 0, 3, 7, 8, 12, 4, 5, 9, 10, 2, 1],
             hidden: vec![],
             cover_overlay_enabled: default_cover_overlay_enabled(),
         }
@@ -29,14 +29,17 @@ impl Default for TableColumns {
 }
 
 impl TableColumns {
-    /// Preserve the relative order and hidden state of the original 11 columns.
+    /// Preserve custom order and visibility when adding cover and energy columns.
     pub fn upgrade(mut self) -> Result<Self, String> {
-        if self.order.len() == 11 && !self.order.contains(&11) {
+        for (new_id, after_id) in [(11, 6), (12, 8)] {
+            if self.order.len() != new_id as usize {
+                continue;
+            }
             let mut old = self.order.clone();
             old.sort_unstable();
             if self.version != 1
-                || old != (0..11).collect::<Vec<_>>()
-                || self.hidden.len() >= 11
+                || old != (0..new_id).collect::<Vec<_>>()
+                || self.hidden.len() >= new_id as usize
                 || self.hidden.iter().any(|id| !self.order.contains(id))
                 || self
                     .hidden
@@ -46,8 +49,13 @@ impl TableColumns {
             {
                 return Err("Invalid legacy track-table column preferences".into());
             }
-            let position = self.order.iter().position(|id| *id == 6).unwrap_or(0) + 1;
-            self.order.insert(position, 11);
+            let position = self
+                .order
+                .iter()
+                .position(|id| *id == after_id)
+                .unwrap_or(0)
+                + 1;
+            self.order.insert(position, new_id);
         }
         self.validate()?;
         Ok(self)
@@ -109,6 +117,7 @@ pub fn label(id: i32) -> &'static str {
         9 => "Gain dB",
         10 => "Analysis",
         11 => "Cover",
+        12 => "Energy",
         _ => "Unknown",
     }
 }
@@ -127,6 +136,7 @@ pub fn sort_label(id: i32) -> &'static str {
         9 => "gain",
         10 => "analysis",
         11 => "cover",
+        12 => "energy",
         _ => "unknown",
     }
 }
@@ -141,6 +151,7 @@ pub fn width(id: i32) -> f32 {
         7 | 8 | 1 => 70.,
         10 => 100.,
         11 => 36.,
+        12 => 110.,
         _ => 70.,
     }
 }
@@ -156,10 +167,10 @@ mod tests {
         columns.change(7, 0).unwrap();
         assert!(columns.hidden.contains(&7));
         columns.change(7, 0).unwrap();
-        for id in 0..11 {
+        for id in 0..12 {
             columns.change(id, 0).unwrap();
         }
-        assert!(columns.change(11, 0).is_err());
+        assert!(columns.change(12, 0).is_err());
         assert!(columns.change(99, 0).is_err());
         columns.order[0] = columns.order[1];
         assert!(columns.validate().is_err());
@@ -178,7 +189,7 @@ mod tests {
                 .order
                 .iter()
                 .copied()
-                .filter(|id| *id != 11)
+                .filter(|id| *id < 11)
                 .collect::<Vec<_>>(),
             old.order
         );

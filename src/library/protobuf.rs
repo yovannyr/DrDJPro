@@ -187,6 +187,7 @@ impl From<&Track> for NativeTrackMessage {
                     bpm: a.bpm,
                     musical_key: a.musical_key.clone(),
                     gain: a.gain,
+                    estimated_energy: a.estimated_energy.map(u32::from),
                     phrase_boundaries_ms: a.phrase_boundaries_ms.clone(),
                     waveform_overview: a.waveform_overview.clone(),
                     is_corrupt: a.is_corrupt,
@@ -235,6 +236,7 @@ impl From<Track> for NativeTrackMessage {
                     bpm: a.bpm,
                     musical_key: a.musical_key,
                     gain: a.gain,
+                    estimated_energy: a.estimated_energy.map(u32::from),
                     phrase_boundaries_ms: a.phrase_boundaries_ms,
                     waveform_overview: a.waveform_overview,
                     is_corrupt: a.is_corrupt,
@@ -278,6 +280,7 @@ impl TryFrom<NativeTrackMessage> for Track {
                     bpm: a.bpm,
                     musical_key: a.musical_key,
                     gain: a.gain,
+                    estimated_energy: a.estimated_energy.map(|n| n as u8),
                     phrase_boundaries_ms: a.phrase_boundaries_ms,
                     waveform_overview: a.waveform_overview,
                     is_corrupt: a.is_corrupt,
@@ -365,6 +368,7 @@ mod tests {
         track.metadata.analysis = Some(crate::audio_analyzer::TrackAnalysisResult {
             beat_anchor_ms: Some(0),
             analyzed_ms: Some(45000),
+            estimated_energy: Some(6),
             phrase_boundaries_ms: vec![16000, 32000],
             file_path: "analysis-source".into(),
             bpm: 128.125,
@@ -449,6 +453,12 @@ mod tests {
             .err()
             .unwrap()
             .contains("confirmed_key"));
+        let mut invalid = original.clone();
+        invalid.metadata.analysis.as_mut().unwrap().estimated_energy = Some(257);
+        assert!(Track::try_from(invalid)
+            .err()
+            .unwrap()
+            .contains("estimated_energy"));
         let mut invalid = original.clone();
         invalid.metadata.dj_energy = Some(11);
         assert!(Track::try_from(invalid)

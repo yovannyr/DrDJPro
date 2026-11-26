@@ -29,7 +29,7 @@ fn import_review_keeps_rescan_choice_and_all_skipped_apply_preserves_revisions()
     let ui = AppWindow::new().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let (c, copy) = open_exact_copy_review(&ui, directory.path());
-    assert!(!c.library.borrow().analysis_targets().is_empty());
+    assert!(!c.library.borrow().analysis_targets(false).is_empty());
     assert!(c.pending_import.borrow().is_none());
     ui.invoke_analyze_library();
     assert_eq!(

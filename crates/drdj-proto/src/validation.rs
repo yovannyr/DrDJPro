@@ -206,6 +206,12 @@ contract!(LoopMessage, self, {
 });
 
 contract!(AnalysisMessage, self, {
+    if self
+        .estimated_energy
+        .is_some_and(|n| !(1..=10).contains(&n))
+    {
+        return Err(invalid("estimated_energy", "expected 1 through 10"));
+    }
     if !crate::valid_phrase_boundaries(&self.phrase_boundaries_ms, self.analyzed_ms) {
         return Err(invalid(
             "phrase_boundaries_ms",
