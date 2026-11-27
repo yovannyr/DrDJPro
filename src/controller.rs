@@ -227,12 +227,12 @@ impl slint::Model for LibraryRows {
 fn library_row(track: &crate::library::Track) -> crate::LibraryRow {
     let analysis = track.metadata.analysis.as_ref();
     crate::LibraryRow {
-        energy: match track.metadata.music_labels.energy() {
-            Some(n) => n.to_string().into(),
-            None => track
-                .estimated_energy()
-                .map_or_else(|| "—".into(), |n| format!("{n} (estimated)").into()),
-        },
+        energy: track
+            .metadata
+            .music_labels
+            .energy()
+            .or_else(|| track.estimated_energy())
+            .map_or_else(|| "—".into(), |n| n.to_string().into()),
         cover_key: track
             .metadata
             .music_labels
@@ -19766,7 +19766,7 @@ mod tests {
             let other = library.track_by_id(4).unwrap();
             assert_eq!(
                 library_row(other).energy.as_str(),
-                format!("{} (estimated)", other.estimated_energy().unwrap())
+                other.estimated_energy().unwrap().to_string()
             );
             assert!(library_row(other).cover_energy.is_empty());
         }
@@ -19834,7 +19834,7 @@ mod tests {
         assert_eq!(row.prepare_duration, "04:14.90");
         assert_eq!(row.gain, "+0.0");
         assert_eq!(row.analysis_status, "Analyzed");
-        assert_eq!(row.energy, "6 (estimated)");
+        assert_eq!(row.energy, "6");
         assert!(row.cover_energy.is_empty());
         for (width, height) in [(850., 860.), (1280., 860.)] {
             ui.window().set_size(slint::LogicalSize::new(width, height));
