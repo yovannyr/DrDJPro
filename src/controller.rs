@@ -733,6 +733,9 @@ impl AudioController {
             displayed_details: RefCell::new([None, None]),
         });
         ui.set_audio_enabled(true);
+        // Keep the four slot controls alive while the audio state is polled.
+        let slots = vec![crate::SamplerRow::default(); 4];
+        ui.set_sampler_slots(ModelRc::new(VecModel::from(slots)));
         let count = (controller.engine.borrow().output_channels() / 2).max(1);
         ui.set_output_pair_options(slint::ModelRc::new(slint::VecModel::from(
             (0..count)
@@ -6259,7 +6262,7 @@ impl AudioController {
                             s.preferences.tonal = None;
                         }
                     }
-                    self.sampler_status(format!("Sampler slot{} ready (stopped)", job.slot + 1));
+                    self.sampler_status(format!("Sample loaded into slot {}", job.slot + 1));
                 }
                 Ok(Ok(_)) => (),
                 Ok(Err(error)) => {
@@ -6304,47 +6307,48 @@ impl AudioController {
         ui.set_sampler_ready(self.storage_ready.get() && !self.engine.borrow().output_failed());
         ui.set_sampler_loading(s.job.is_some() || !s.restore.is_empty());
         ui.set_sampler_gain(s.preferences.gain * 100.);
-        let rows = (0..4)
-            .map(|i| {
-                let busy = s
-                    .job
-                    .as_ref()
-                    .is_some_and(|j| j.slot == i && !j.keep_playing)
-                    || s.restore.iter().any(|(slot, _)| *slot == i);
-                let loaded = s.shared.ready(i);
-                let name = s.preferences.paths[i].as_ref().map_or_else(
-                    || "Empty".into(),
-                    |p| {
-                        p.file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned()
-                    },
-                );
-                let name = s.preferences.layers[i]
-                    .as_ref()
-                    .map_or(name, |pair| pair.name.clone());
-                let name = s.preferences.tonal.as_ref().map_or(name, |l| {
-                    format!(
-                        "{} · {}",
-                        crate::source_monitor::analysis::note_name(i32::from(l.notes[i])),
-                        l.key
-                    )
-                });
-                crate::SamplerRow {
-                    name: if !loaded && !busy && s.preferences.paths[i].is_some() {
-                        format!("Unavailable: {name}").into()
-                    } else {
-                        name.into()
-                    },
-                    loaded,
-                    busy,
-                    playing: s.shared.active(i),
-                    occupied: s.preferences.paths[i].is_some() || loaded,
-                }
-            })
-            .collect::<Vec<_>>();
-        ui.set_sampler_slots(ModelRc::new(Rc::new(VecModel::from(rows))));
+        let rows = ui.get_sampler_slots();
+        for i in 0..4 {
+            let busy = s
+                .job
+                .as_ref()
+                .is_some_and(|j| j.slot == i && !j.keep_playing)
+                || s.restore.iter().any(|(slot, _)| *slot == i);
+            let loaded = s.shared.ready(i);
+            let name = s.preferences.paths[i].as_ref().map_or_else(
+                || "Empty".into(),
+                |p| {
+                    p.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                },
+            );
+            let name = s.preferences.layers[i]
+                .as_ref()
+                .map_or(name, |pair| pair.name.clone());
+            let name = s.preferences.tonal.as_ref().map_or(name, |l| {
+                format!(
+                    "{} · {}",
+                    crate::source_monitor::analysis::note_name(i32::from(l.notes[i])),
+                    l.key
+                )
+            });
+            let row = crate::SamplerRow {
+                name: if !loaded && !busy && s.preferences.paths[i].is_some() {
+                    format!("Unavailable: {name}").into()
+                } else {
+                    name.into()
+                },
+                loaded,
+                busy,
+                playing: s.shared.active(i),
+                occupied: s.preferences.paths[i].is_some() || loaded,
+            };
+            if rows.row_data(i).as_ref() != Some(&row) {
+                rows.set_row_data(i, row);
+            }
+        }
     }
     fn fx_deck(deck: i32) -> Option<DeckId> {
         match deck {
@@ -10876,7 +10880,31 @@ mod tests {
                 }
             }
         }
+        // A mouse press can span UI polls. Exercise two complete one-shots.
+        use slint::platform::{PointerEventButton, WindowEvent};
         ui.invoke_sampler_action(0, 4, false);
+        output.by_ref().take(4096).for_each(drop);
+        for _ in 0..2 {
+            let play = control(&ui, "Sampler slot 1 play");
+            let p = play.absolute_position();
+            let size = play.size();
+            let position =
+                slint::LogicalPosition::new(p.x + size.width / 2., p.y + size.height / 2.);
+            let button = PointerEventButton::Left;
+            ui.window()
+                .dispatch_event(WindowEvent::PointerPressed { position, button });
+            let slots = ui.get_sampler_slots();
+            c.poll_sampler();
+            assert_eq!(slots, ui.get_sampler_slots(), "poll replaced the pressed slot");
+            ui.window()
+                .dispatch_event(WindowEvent::PointerReleased { position, button });
+            assert!(
+                output.by_ref().take(4096).any(|v| v.abs() > 0.001),
+                "PLAY across UI poll produced silence"
+            );
+            output.by_ref().take(48000 * 5).for_each(drop);
+            assert!(!engine.sampler().active(0));
+        }
         assert!((0..4).all(|i| !engine.sampler().active(i)));
         c.close_library().unwrap();
         ui.hide().unwrap();
